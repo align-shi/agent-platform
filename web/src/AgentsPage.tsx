@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { CommentOutlined } from '@ant-design/icons'
 import {
   Avatar,
   Button,
@@ -9,9 +10,9 @@ import {
   Form,
   Input,
   InputNumber,
-  Menu,
   Popconfirm,
   Radio,
+  Segmented,
   Select,
   Space,
   Tag,
@@ -30,6 +31,8 @@ import {
   type RemoteMcp,
   type Skill,
 } from './api'
+import { AgentCallsPanel } from './CallsPage'
+import { AgentChatPanel, type AgentChatHandle } from './ChatPage'
 
 type AgentSection = 'llm' | 'memory' | 'connectors' | 'knowledge' | 'skills' | 'prompt' | 'other'
 
@@ -42,6 +45,83 @@ const AGENT_SECTIONS: { id: AgentSection; label: string }[] = [
   { id: 'prompt', label: '系统提示词' },
   { id: 'other', label: '其他' },
 ]
+
+function AgentPreview({
+  agentId,
+  onError,
+}: {
+  agentId: string | null
+  onError: (message: string) => void
+}) {
+  const [pane, setPane] = useState<'chat' | 'calls'>('chat')
+  const [traceConversationId, setTraceConversationId] = useState('')
+  const chatRef = useRef<AgentChatHandle>(null)
+
+  useEffect(() => {
+    setTraceConversationId('')
+    setPane('chat')
+  }, [agentId])
+
+  return (
+    <aside className="agent-side">
+      <div className="agent-side-head">
+        <span className="agent-side-title">
+          <CommentOutlined />
+          对话调试
+        </span>
+        <div className="agent-side-actions">
+          <Segmented
+            size="small"
+            value={pane}
+            onChange={(value) => setPane(value as 'chat' | 'calls')}
+            options={[
+              { label: '对话', value: 'chat' },
+              { label: '轨迹', value: 'calls', disabled: !traceConversationId },
+            ]}
+          />
+          <Button
+            size="small"
+            disabled={!agentId}
+            onClick={() => {
+              setPane('chat')
+              chatRef.current?.startNew()
+            }}
+          >
+            新对话
+          </Button>
+        </div>
+      </div>
+      <div className="agent-side-body">
+        {!agentId ? (
+          <div className="agent-side-empty">
+            <Empty description="创建后可以在这里对话，并查看调用记录。" />
+          </div>
+        ) : (
+          <>
+            <div className="agent-side-pane" style={{ display: pane === 'chat' ? 'flex' : 'none' }}>
+              <AgentChatPanel
+                ref={chatRef}
+                agentId={agentId}
+                onError={onError}
+                onHistoryOpen={(id) => {
+                  setTraceConversationId(id ?? '')
+                  if (!id) {
+                    setPane('chat')
+                  }
+                }}
+              />
+            </div>
+            {pane === 'calls' && traceConversationId ? (
+              <div className="agent-side-pane">
+                <AgentCallsPanel agentId={agentId} conversationId={traceConversationId} onError={onError} />
+              </div>
+            ) : null}
+          </>
+        )}
+      </div>
+    </aside>
+  )
+}
 
 function memoryModeLabel(mode: MemoryMode | undefined) {
   if (mode === 'CROSS') {
@@ -207,7 +287,7 @@ export function AgentsPage({
               智能体
             </Typography.Title>
             <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
-              点进去先填写名称和唯一编码，再配置模型、记忆、工具和提示词。
+              点进去配置模型、记忆和工具，右侧可以直接对话、查看调用记录。
             </Typography.Paragraph>
           </div>
           <Button type="primary" onClick={openCreate}>
@@ -250,8 +330,8 @@ export function AgentsPage({
   }
 
   return (
-    <div>
-      <Flex justify="space-between" align="center" style={{ marginBottom: 20 }} gap={12}>
+    <div className="agent-detail-page">
+      <Flex justify="space-between" align="center" style={{ marginBottom: 12, flex: 'none' }} gap={12}>
         <Space>
           <Button onClick={backToList}>返回列表</Button>
           <Typography.Title level={4} style={{ margin: 0 }}>
@@ -279,37 +359,33 @@ export function AgentsPage({
           </Button>
         </Space>
       </Flex>
-      <Card title="基础信息" style={{ marginBottom: 16 }}>
-        <Typography.Paragraph type="secondary">
-          先填写名称和唯一编码，再配置下面的模型、记忆、连接器和提示词。
-        </Typography.Paragraph>
-        <Form layout="vertical">
-          <Flex gap={16}>
-            <Form.Item label="名称" required style={{ flex: 1, marginBottom: 0 }}>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：彩票助手" />
-            </Form.Item>
-            <Form.Item
-              label="唯一编码"
-              required
-              extra="以字母开头，仅字母、数字、下划线或中划线，不能与其他智能体重复。"
-              style={{ flex: 1, marginBottom: 0 }}
-            >
-              <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="例如：lottery" />
-            </Form.Item>
-          </Flex>
-        </Form>
-      </Card>
-      <Flex gap={16} align="flex-start">
-        <Card size="small" styles={{ body: { padding: 8 } }} style={{ width: 188, flexShrink: 0 }}>
-          <Menu
-            mode="inline"
-            selectedKeys={[section]}
-            items={AGENT_SECTIONS.map((item) => ({ key: item.id, label: item.label }))}
-            onClick={({ key }) => setSection(key as AgentSection)}
-            style={{ border: 0 }}
-          />
-        </Card>
-        <Card title={AGENT_SECTIONS.find((item) => item.id === section)?.label} style={{ flex: 1, minHeight: 420 }}>
+      <div className="agent-workspace">
+        <div className="agent-config">
+          <Card title="基础信息">
+            <Typography.Paragraph type="secondary">
+              先填写名称和唯一编码，再配置下面的模型、记忆、连接器和提示词。
+            </Typography.Paragraph>
+            <Form layout="vertical">
+              <Flex gap={16}>
+                <Form.Item label="名称" required style={{ flex: 1, marginBottom: 0 }}>
+                  <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：彩票助手" />
+                </Form.Item>
+                <Form.Item
+                  label="唯一编码"
+                  required
+                  extra="以字母开头，仅字母、数字、下划线或中划线，不能与其他智能体重复。"
+                  style={{ flex: 1, marginBottom: 0 }}
+                >
+                  <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="例如：lottery" />
+                </Form.Item>
+              </Flex>
+            </Form>
+          </Card>
+          <Card
+            tabList={AGENT_SECTIONS.map((item) => ({ key: item.id, label: item.label }))}
+            activeTabKey={section}
+            onTabChange={(key) => setSection(key as AgentSection)}
+          >
           {section === 'llm' ? (
             <Form layout="vertical">
               <Typography.Paragraph type="secondary">对话和摘要都走这里绑定的 Chat 提供商。</Typography.Paragraph>
@@ -509,8 +585,10 @@ export function AgentsPage({
             </>
           ) : null}
           {section === 'other' ? <Empty description="暂时没有其他配置项。" /> : null}
-        </Card>
-      </Flex>
+          </Card>
+        </div>
+        <AgentPreview agentId={editingId} onError={onError} />
+      </div>
     </div>
   )
 }

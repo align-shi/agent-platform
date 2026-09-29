@@ -15,9 +15,13 @@ public interface AgentCallRepository extends JpaRepository<AgentCallEntity, Stri
 			       c.promptTokens, c.completionTokens, c.totalTokens, c.error
 			from AgentCallEntity c
 			where (:agentId is null or :agentId = '' or c.agentId = :agentId)
+			  and (:conversationId is null or :conversationId = '' or c.conversationId = :conversationId)
 			order by c.startedAt desc
 			""")
-	List<Object[]> listRows(@Param("agentId") String agentId, Pageable pageable);
+	List<Object[]> listRows(
+			@Param("agentId") String agentId,
+			@Param("conversationId") String conversationId,
+			Pageable pageable);
 
 	void deleteByConversationId(String conversationId);
 

@@ -34,10 +34,11 @@ public class CallTraceService {
 	}
 
 	@Transactional(readOnly = true)
-	public List<CallDtos.Summary> list(String agentId) {
-		String filter = agentId == null ? "" : agentId;
+	public List<CallDtos.Summary> list(String agentId, String conversationId) {
+		String agentFilter = agentId == null ? "" : agentId;
+		String conversationFilter = conversationId == null ? "" : conversationId;
 		List<CallDtos.Summary> rows = new ArrayList<>();
-		for (Object[] row : repository.listRows(filter, PageRequest.of(0, PAGE_SIZE))) {
+		for (Object[] row : repository.listRows(agentFilter, conversationFilter, PageRequest.of(0, PAGE_SIZE))) {
 			rows.add(toSummary(row));
 		}
 		return rows;

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Empty, Select, Spin, Tabs, Tag, Typography } from 'antd'
-import { getCall, listCalls, type Agent, type CallDetail, type CallSpan, type CallSummary } from './api'
+import { Button, Empty, Spin, Tabs, Tag, Typography } from 'antd'
+import { getCall, listCalls, type CallDetail, type CallSpan, type CallSummary } from './api'
 
 const KIND_LABEL: Record<string, string> = {
   system: '系统',
@@ -103,7 +103,7 @@ function SpanTree({
   )
 }
 
-function TraceView({ detail }: { detail: CallDetail }) {
+function TraceView({ detail, compact = false }: { detail: CallDetail; compact?: boolean }) {
   const call = detail.call
   const [selectedId, setSelectedId] = useState('')
   const selected = findSpan(detail.spans, selectedId) ?? firstSpan(detail.spans)
@@ -115,7 +115,7 @@ function TraceView({ detail }: { detail: CallDetail }) {
   }, [detail])
 
   return (
-    <div className="trace-view">
+    <div className={compact ? 'trace-view compact' : 'trace-view'}>
       <div className="trace-stats">
         <span>时长 {formatDuration(call.latencyMs)}</span>
         <span>轮次 {call.rounds}</span>
@@ -190,8 +190,15 @@ function TraceView({ detail }: { detail: CallDetail }) {
   )
 }
 
-export function CallsPage({ agents, onError }: { agents: Agent[]; onError: (message: string) => void }) {
-  const [agentId, setAgentId] = useState('')
+export function AgentCallsPanel({
+  agentId,
+  conversationId,
+  onError,
+}: {
+  agentId: string
+  conversationId: string
+  onError: (message: string) => void
+}) {
   const [calls, setCalls] = useState<CallSummary[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [detail, setDetail] = useState<CallDetail | null>(null)
@@ -201,13 +208,13 @@ export function CallsPage({ agents, onError }: { agents: Agent[]; onError: (mess
   useEffect(() => {
     let cancelled = false
     setLoadingList(true)
-    listCalls(agentId || undefined)
+    setSelectedId('')
+    setDetail(null)
+    listCalls(agentId, conversationId)
       .then((rows) => {
-        if (cancelled) {
-          return
+        if (!cancelled) {
+          setCalls(rows)
         }
-        setCalls(rows)
-        setSelectedId((current) => (current && rows.some((row) => row.id === current) ? current : (rows[0]?.id ?? '')))
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -222,7 +229,7 @@ export function CallsPage({ agents, onError }: { agents: Agent[]; onError: (mess
     return () => {
       cancelled = true
     }
-  }, [agentId, onError])
+  }, [agentId, conversationId, onError])
 
   useEffect(() => {
     if (!selectedId) {
@@ -252,59 +259,49 @@ export function CallsPage({ agents, onError }: { agents: Agent[]; onError: (mess
     }
   }, [selectedId, onError])
 
-  return (
-    <div className="trace-page">
-      <aside className="trace-side">
-        <div className="trace-side-head">
-          <Typography.Title level={5} style={{ margin: 0 }}>
-            调用记录
-          </Typography.Title>
-          <Select
-            allowClear
-            placeholder="全部智能体"
-            style={{ width: '100%', marginTop: 12 }}
-            value={agentId || undefined}
-            options={agents.map((agent) => ({ value: agent.id, label: agent.name }))}
-            onChange={(value) => setAgentId(value ?? '')}
-          />
+  if (selectedId) {
+    return (
+      <div className="agent-calls">
+        <div className="agent-calls-back">
+          <Button type="link" size="small" onClick={() => setSelectedId('')}>
+            返回列表
+          </Button>
         </div>
-        <div className="trace-list">
-          {loadingList && calls.length === 0 ? (
+        <div className="agent-calls-detail">
+          {loadingDetail && detail?.call.id !== selectedId ? (
             <div className="trace-loading">
               <Spin />
             </div>
           ) : null}
-          {!loadingList && calls.length === 0 ? (
-            <Empty description="还没有调用。去试聊发一条消息后，这里会留下提示词、模型和工具调用。" />
-          ) : null}
-          {calls.map((call) => (
-            <button
-              key={call.id}
-              type="button"
-              className={call.id === selectedId ? 'trace-list-item active' : 'trace-list-item'}
-              onClick={() => setSelectedId(call.id)}
-            >
-              <span>
-                <strong>{call.agentName}</strong>
-                <Tag color={call.status === 'SUCCESS' ? 'success' : 'error'}>{call.status === 'SUCCESS' ? '成功' : '失败'}</Tag>
-              </span>
-              <em>{call.userInput || '空消息'}</em>
-              <small>
-                {formatTime(call.startedAt)} · {formatDuration(call.latencyMs)} · {call.totalTokens} token
-              </small>
-            </button>
-          ))}
+          {detail && detail.call.id === selectedId ? <TraceView detail={detail} compact /> : null}
         </div>
-      </aside>
-      <section className="trace-main">
-        {loadingDetail && detail?.call.id !== selectedId ? (
+      </div>
+    )
+  }
+
+  return (
+    <div className="agent-calls">
+      <div className="trace-list">
+        {loadingList && calls.length === 0 ? (
           <div className="trace-loading">
             <Spin />
           </div>
         ) : null}
-        {!selectedId && !loadingList ? <Empty description="选一条调用查看轨迹" /> : null}
-        {detail && detail.call.id === selectedId ? <TraceView detail={detail} /> : null}
-      </section>
+        {!loadingList && calls.length === 0 ? (
+          <Empty description="这个对话还没有调用记录。" />
+        ) : null}
+        {calls.map((call) => (
+          <button key={call.id} type="button" className="trace-list-item" onClick={() => setSelectedId(call.id)}>
+            <span>
+              <strong>{call.userInput || '空消息'}</strong>
+              <Tag color={call.status === 'SUCCESS' ? 'success' : 'error'}>{call.status === 'SUCCESS' ? '成功' : '失败'}</Tag>
+            </span>
+            <small>
+              {formatTime(call.startedAt)} · {formatDuration(call.latencyMs)} · {call.totalTokens} token
+            </small>
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

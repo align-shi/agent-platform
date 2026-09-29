@@ -1,5 +1,9 @@
 package com.agentplatform.hub.chat;
 
+import java.util.ArrayList;
+import java.util.List;
+
+import com.agentplatform.hub.knowledge.KnowledgeService.Hit;
 import com.agentplatform.hub.knowledge.KnowledgeService.Retrieval;
 
 final class KnowledgePrompt {
@@ -33,6 +37,43 @@ final class KnowledgePrompt {
 			return;
 		}
 		system.append(MISS.trim());
+	}
+
+	/** 只有回答里实际引用了资料原文时，才把这条检索结果当成引用。 */
+	static List<Hit> cited(Retrieval retrieval, String assistant) {
+		if (retrieval == null || retrieval.hits().isEmpty() || assistant == null || assistant.isBlank()) {
+			return List.of();
+		}
+		String reply = compact(assistant);
+		List<Hit> used = new ArrayList<>();
+		for (Hit hit : retrieval.hits()) {
+			String probe = probe(hit.content());
+			if (!probe.isEmpty() && reply.contains(probe)) {
+				used.add(hit);
+			}
+		}
+		return used;
+	}
+
+	private static String probe(String content) {
+		String source = compact(content);
+		if (source.length() < 6) {
+			return "";
+		}
+		return source.length() <= 24 ? source : source.substring(0, 24);
+	}
+
+	private static String compact(String text) {
+		if (text == null || text.isBlank()) {
+			return "";
+		}
+		StringBuilder out = new StringBuilder(text.length());
+		for (int i = 0; i < text.length(); i++) {
+			if (!Character.isWhitespace(text.charAt(i))) {
+				out.append(text.charAt(i));
+			}
+		}
+		return out.toString();
 	}
 
 }

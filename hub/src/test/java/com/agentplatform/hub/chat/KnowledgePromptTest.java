@@ -43,4 +43,24 @@ class KnowledgePromptTest {
 		assertTrue(system.toString().contains("如果资料和用户问题不对应"));
 	}
 
+	@Test
+	void unrelatedReplyDropsCitation() {
+		Retrieval retrieval = faq();
+		String reply = "大乐透（体彩）号码如下：\n第 1 组：05 10 23 29 30 + 05 10";
+		assertTrue(KnowledgePrompt.cited(retrieval, reply).isEmpty());
+	}
+
+	@Test
+	void quotedReplyKeepsCitation() {
+		Retrieval retrieval = faq();
+		assertEquals(retrieval.hits(), KnowledgePrompt.cited(retrieval, "1.你能做什么\n答：我能生成彩票信息"));
+	}
+
+	private static Retrieval faq() {
+		return new Retrieval(
+				"检索到的知识库资料",
+				List.of(new Hit("产品帮助手册", "说明.txt", "1.你能做什么\n答：我能生成彩票信息")),
+				true);
+	}
+
 }

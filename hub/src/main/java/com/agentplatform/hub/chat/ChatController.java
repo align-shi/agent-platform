@@ -28,7 +28,7 @@ public class ChatController {
 		SseEmitter emitter = new SseEmitter(5 * 60 * 1000L);
 		executor.submit(() -> {
 			try {
-				agentChat.stream(request, emitter);
+				agentChat.stream(request, ChatSink.sse(emitter));
 			}
 			catch (Exception ex) {
 				try {

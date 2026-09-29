@@ -66,6 +66,16 @@ public class AgentService {
 	}
 
 	@Transactional(readOnly = true)
+	public AgentEntity requireByCode(String code) {
+		String normalized = code == null ? "" : code.trim();
+		if (!CODE.matcher(normalized).matches()) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "唯一编码须以字母开头，只能包含字母、数字、下划线和中划线");
+		}
+		return repository.findByCode(normalized)
+				.orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent not found"));
+	}
+
+	@Transactional(readOnly = true)
 	public List<String> skillIds(String agentId) {
 		return agentSkills.findByAgentIdOrderBySkillIdAsc(agentId).stream()
 				.map(AgentSkillEntity::getSkillId)

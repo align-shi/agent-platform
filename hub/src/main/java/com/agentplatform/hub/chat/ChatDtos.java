@@ -18,4 +18,7 @@ public final class ChatDtos {
 			@NotBlank String content) {
 	}
 
+	public record Reply(String agentCode, String conversationId, String content, String callId) {
+	}
+
 }

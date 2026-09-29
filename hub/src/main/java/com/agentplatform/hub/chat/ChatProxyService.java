@@ -15,8 +15,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-
 import com.agentplatform.hub.provider.ProviderEntity;
 
 @Service
@@ -35,7 +33,7 @@ public class ChatProxyService {
 			String apiKey,
 			String model,
 			List<ChatDtos.Message> messages,
-			SseEmitter emitter) throws Exception {
+			ChatSink sink) throws Exception {
 		Map<String, Object> payload = new LinkedHashMap<>();
 		payload.put("model", model);
 		payload.put("messages", messages);
@@ -64,7 +62,6 @@ public class ChatProxyService {
 							if (line.startsWith("data:")) {
 								String data = line.substring(5).trim();
 								if ("[DONE]".equals(data)) {
-									emitter.send(SseEmitter.event().name("done").data("[DONE]"));
 									break;
 								}
 								TokenUsage found = TokenUsage.fromSseData(data);
@@ -72,10 +69,9 @@ public class ChatProxyService {
 									usage[0] = found;
 								}
 								assistant.append(extractDelta(data));
-								emitter.send(SseEmitter.event().data(data));
+								sink.delta(data);
 							}
 						}
-						emitter.complete();
 					}
 					return null;
 				});
@@ -88,7 +84,7 @@ public class ChatProxyService {
 			String model,
 			List<Map<String, Object>> messages,
 			List<Map<String, Object>> tools,
-			SseEmitter emitter) {
+			ChatSink sink) {
 		Map<String, Object> payload = new LinkedHashMap<>();
 		payload.put("model", model);
 		payload.put("messages", messages);
@@ -125,7 +121,7 @@ public class ChatProxyService {
 							}
 							String fragment = assembler.accept(data);
 							if (!fragment.isEmpty()) {
-								emitter.send(SseEmitter.event().data(data));
+								sink.delta(data);
 							}
 						}
 					}

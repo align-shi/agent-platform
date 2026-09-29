@@ -10,8 +10,6 @@ import java.util.Set;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-
 import com.agentplatform.hub.agent.AgentEntity;
 import com.agentplatform.hub.agent.AgentService;
 import com.agentplatform.hub.conversation.CitationJson;
@@ -73,7 +71,12 @@ public class AgentChatService {
 		this.callTraces = callTraces;
 	}
 
-	public void stream(ChatDtos.Request request, SseEmitter emitter) throws Exception {
+	public ChatDtos.Reply completeByCode(String code, String conversationId, String content) throws Exception {
+		AgentEntity agent = agents.requireByCode(code);
+		return stream(new ChatDtos.Request(agent.getId(), conversationId, content), ChatSink.silent());
+	}
+
+	public ChatDtos.Reply stream(ChatDtos.Request request, ChatSink sink) throws Exception {
 		AgentEntity agent = agents.require(request.agentId());
 		ProviderEntity provider = providers.require(agent.getProviderId());
 		if (provider.getType() != ProviderType.CHAT) {
@@ -82,7 +85,7 @@ public class AgentChatService {
 		String userText = request.content().trim();
 		ConversationEntity conversation = conversations.getOrCreate(agent.getId(), request.conversationId());
 		conversations.append(conversation.getId(), "user", userText);
-		emitter.send(SseEmitter.event().name("meta").data("{\"conversationId\":\"" + conversation.getId() + "\"}"));
+		sink.meta(conversation.getId());
 
 		CallTraceRecorder trace = CallTraceRecorder.start(
 				agent.getId(),
@@ -101,10 +104,10 @@ public class AgentChatService {
 		Exception failed = null;
 		try {
 			long retrievalMark = trace.mark();
-			Retrieval retrieval = retrieveKnowledge(agent, userText, emitter);
+			Retrieval retrieval = retrieveKnowledge(agent, userText, sink);
 			trace.retrieval(TraceTexts.knowledge(retrieval), retrievalMark);
 			if (skillIds.isEmpty() && boundHttpTools.isEmpty() && boundMcpTools.isEmpty()) {
-				assistant = runPlain(agent, provider, apiKey, conversation.getId(), retrieval, trace, emitter);
+				assistant = runPlain(agent, provider, apiKey, conversation.getId(), retrieval, trace, sink);
 			}
 			else {
 				assistant = runWithTools(
@@ -117,24 +120,23 @@ public class AgentChatService {
 						boundMcpTools,
 						retrieval,
 						trace,
-						emitter);
+						sink);
 			}
 			trace.assistant(assistant);
 			if (assistant != null && !assistant.isBlank()) {
-				conversations.append(conversation.getId(), "assistant", assistant, citationsJson(retrieval));
+				conversations.append(conversation.getId(), "assistant", assistant, citationsJson(retrieval, assistant));
 				memory.rememberTurn(agent, provider, apiKey, userText, assistant);
 			}
 		}
 		catch (Exception ex) {
 			failed = ex;
 		}
-		if (failed == null) {
-			callTraces.save(trace.success());
-		}
-		else {
-			callTraces.save(trace.failure(errorText(failed)));
+		CallTraceRecorder.Draft draft = failed == null ? trace.success() : trace.failure(errorText(failed));
+		callTraces.save(draft);
+		if (failed != null) {
 			throw failed;
 		}
+		return new ChatDtos.Reply(agent.getCode(), conversation.getId(), assistant == null ? "" : assistant, draft.id());
 	}
 
 	private String runPlain(
@@ -144,7 +146,7 @@ public class AgentChatService {
 			String conversationId,
 			Retrieval retrieval,
 			CallTraceRecorder trace,
-			SseEmitter emitter) throws Exception {
+			ChatSink sink) throws Exception {
 		long prep = trace.mark();
 		PreparedMemory prepared = memory.prepare(
 				agent,
@@ -168,22 +170,24 @@ public class AgentChatService {
 				TraceTexts.knowledge(retrieval),
 				prep);
 		long mark = trace.mark();
+		ChatRound result;
 		try {
-			ChatRound result = chatProxy.stream(provider, apiKey, agent.getModel(), payload, emitter);
-			trace.model(
-					agent.getModel(),
-					result.content(),
-					result.usage().promptTokens(),
-					result.usage().completionTokens(),
-					result.usage().totalTokens(),
-					0,
-					mark);
-			return result.content();
+			result = chatProxy.stream(provider, apiKey, agent.getModel(), payload, sink);
 		}
 		catch (RuntimeException ex) {
 			trace.modelFailed(agent.getModel(), errorText(ex), 0, mark);
 			throw ex;
 		}
+		trace.model(
+				agent.getModel(),
+				result.content(),
+				result.usage().promptTokens(),
+				result.usage().completionTokens(),
+				result.usage().totalTokens(),
+				0,
+				mark);
+		finish(sink, retrieval, result.content());
+		return result.content();
 	}
 
 	private String runWithTools(
@@ -196,7 +200,7 @@ public class AgentChatService {
 			List<BoundMcpTool> boundMcpTools,
 			Retrieval retrieval,
 			CallTraceRecorder trace,
-			SseEmitter emitter) throws Exception {
+			ChatSink sink) throws Exception {
 		long prep = trace.mark();
 		PreparedMemory prepared = memory.prepare(
 				agent,
@@ -238,7 +242,7 @@ public class AgentChatService {
 			long mark = trace.mark();
 			ChatRound result;
 			try {
-				result = chatProxy.streamRound(provider, apiKey, agent.getModel(), messages, offered, emitter);
+				result = chatProxy.streamRound(provider, apiKey, agent.getModel(), messages, offered, sink);
 				trace.model(
 						agent.getModel(),
 						result.content(),
@@ -258,7 +262,7 @@ public class AgentChatService {
 			if (!result.hasToolCalls()) {
 				break;
 			}
-			emitter.send(SseEmitter.event().name("status").data(statusText(result.toolCalls())));
+			sink.status(statusText(result.toolCalls()));
 			messages.add(assistantToolMessage(result));
 			for (ChatRound.ToolCall call : result.toolCalls()) {
 				long toolMark = trace.mark();
@@ -297,11 +301,10 @@ public class AgentChatService {
 				throw ex;
 			}
 			if (!assistant.isBlank()) {
-				emitter.send(SseEmitter.event().data(ChatProxyService.deltaPayload(assistant)));
+				sink.delta(ChatProxyService.deltaPayload(assistant));
 			}
 		}
-		emitter.send(SseEmitter.event().name("done").data("[DONE]"));
-		emitter.complete();
+		finish(sink, retrieval, assistant);
 		return assistant;
 	}
 
@@ -389,35 +392,39 @@ public class AgentChatService {
 		return text.toString();
 	}
 
-	private Retrieval retrieveKnowledge(AgentEntity agent, String query, SseEmitter emitter) throws Exception {
+	private Retrieval retrieveKnowledge(AgentEntity agent, String query, ChatSink sink) throws Exception {
 		if (knowledge.idsForAgent(agent.getId()).isEmpty()) {
 			return Retrieval.empty();
 		}
-		emitter.send(SseEmitter.event().name("status").data("正在检索知识库"));
+		sink.status("正在检索知识库");
 		try {
-			Retrieval retrieval = knowledge.retrieve(agent.getId(), query);
-			String citations = citationsJson(retrieval);
-			if (!citations.isBlank()) {
-				emitter.send(SseEmitter.event().name("citations").data(citations));
-			}
-			return retrieval;
+			return knowledge.retrieve(agent.getId(), query);
 		}
 		catch (RuntimeException ex) {
 			String reason = ex instanceof ResponseStatusException status && status.getReason() != null
 					? status.getReason()
 					: ex.getMessage();
 			String text = reason == null || reason.isBlank() ? "知识库检索失败" : "知识库检索失败：" + clip(reason);
-			emitter.send(SseEmitter.event().name("status").data(text));
+			sink.status(text);
 			return Retrieval.miss();
 		}
 	}
 
-	private static String citationsJson(Retrieval retrieval) {
-		if (retrieval == null || retrieval.hits().isEmpty()) {
+	private void finish(ChatSink sink, Retrieval retrieval, String assistant) throws Exception {
+		String citations = citationsJson(retrieval, assistant);
+		if (!citations.isBlank()) {
+			sink.citations(citations);
+		}
+		sink.done();
+	}
+
+	private static String citationsJson(Retrieval retrieval, String assistant) {
+		List<KnowledgeService.Hit> used = KnowledgePrompt.cited(retrieval, assistant);
+		if (used.isEmpty()) {
 			return "";
 		}
 		List<CitationJson.Item> items = new ArrayList<>();
-		for (KnowledgeService.Hit hit : retrieval.hits()) {
+		for (KnowledgeService.Hit hit : used) {
 			items.add(new CitationJson.Item(hit.knowledgeBase(), hit.document(), hit.content()));
 		}
 		return CitationJson.encode(items);

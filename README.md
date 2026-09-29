@@ -31,6 +31,6 @@ npm run dev
 
 1. 在「模型提供商」配置云厂商
 2. 在「智能体」绑定模型和系统提示
-3. 到「试聊」对某个 Agent 发消息
+3. 打开某个智能体，在右侧对话里发消息，需要时再看轨迹
 
-业务数据在 MySQL 库 `agent_platform`。连接地址和密码用环境变量 `DB_URL`、`DB_USERNAME`、`DB_PASSWORD` 配置，不要写进仓库。API Key 的加密主密钥仍在 `hub/data/master.key`，不要提交这个目录。从 SQLite 切过来后，旧本地库不会自动迁移，需要重新录入提供商和智能体。
+业务数据在 MySQL 库 `agent_platform`，包括智能体、技能正文、参考文件、脚本和历史版本。连接地址和密码用环境变量 `DB_URL`、`DB_USERNAME`、`DB_PASSWORD` 配置，不要写进仓库。`skills/` 目录只在 Hub 启动时导入库里还没有的技能，导入之后以数据库为准。API Key 的加密主密钥仍在 `hub/data/master.key`，不要提交这个目录。从 SQLite 切过来后，旧本地库不会自动迁移，需要重新录入提供商和智能体。

@@ -19,8 +19,10 @@ public class CallController {
 	}
 
 	@GetMapping
-	public List<CallDtos.Summary> list(@RequestParam(required = false) String agentId) {
-		return traces.list(agentId);
+	public List<CallDtos.Summary> list(
+			@RequestParam(required = false) String agentId,
+			@RequestParam(required = false) String conversationId) {
+		return traces.list(agentId, conversationId);
 	}
 
 	@GetMapping("/{id}")

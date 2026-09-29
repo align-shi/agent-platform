@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -13,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
@@ -25,86 +25,67 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class SkillService {
 
+	private static final int WORKING = 0;
 	private static final int MAX_FILE_BYTES = 256 * 1024;
 	private static final int MAX_SCRIPT_OUTPUT = 32 * 1024;
+	private static final String SKILL_FILE = "SKILL.md";
 
-	private final Path skillsDir;
+	private final SkillFileRepository files;
+	private final SkillVersionRepository versions;
 	private final AgentSkillRepository agentSkills;
 	private final Duration scriptTimeout;
 
 	public SkillService(
-			@Value("${agent-platform.skills-dir}") String skillsDir,
+			SkillFileRepository files,
+			SkillVersionRepository versions,
 			AgentSkillRepository agentSkills,
-			@Value("${agent-platform.skill-script-timeout-ms:15000}") long scriptTimeoutMs) throws IOException {
-		this.skillsDir = Path.of(skillsDir).toAbsolutePath().normalize();
+			@Value("${agent-platform.skill-script-timeout-ms:15000}") long scriptTimeoutMs) {
+		this.files = files;
+		this.versions = versions;
 		this.agentSkills = agentSkills;
 		this.scriptTimeout = Duration.ofMillis(scriptTimeoutMs);
-		Files.createDirectories(this.skillsDir);
 	}
 
 	public List<SkillView> list() {
-		try (Stream<Path> stream = Files.list(skillsDir)) {
-			return stream
-					.filter(Files::isDirectory)
-					.map(Path::getFileName)
-					.map(Path::toString)
-					.sorted(Comparator.naturalOrder())
-					.map(this::readOrSkip)
-					.filter(item -> item != null)
-					.toList();
-		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to list skills", ex);
-		}
+		return files.findWorkingCopies().stream()
+				.map(SkillFileEntity::getSkillId)
+				.sorted(Comparator.naturalOrder())
+				.map(this::readOrSkip)
+				.filter(item -> item != null)
+				.toList();
 	}
 
 	public SkillView require(String id) {
-		Path file = skillFile(id);
-		if (!Files.exists(file)) {
-			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill not found");
-		}
-		try {
-			return SkillMarkdown.parse(id, Files.readString(file)).withLatestVersion(latestVersionNumber(id));
-		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to read skill " + id, ex);
-		}
+		String skillId = normalizeId(id);
+		SkillFileEntity file = files.findBySkillIdAndVersionAndPath(skillId, WORKING, SKILL_FILE)
+				.orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill not found"));
+		return SkillMarkdown.parse(skillId, file.getContent()).withLatestVersion(latestVersionNumber(skillId));
 	}
 
+	@Transactional
 	public SkillView create(SkillView request) {
 		String id = normalizeId(request.id());
-		Path file = skillFile(id);
-		if (Files.exists(file)) {
+		if (files.existsBySkillIdAndVersionAndPath(id, WORKING, SKILL_FILE)) {
 			throw new ResponseStatusException(HttpStatus.CONFLICT, "Skill already exists");
 		}
-		return write(id, request);
+		return writeMarkdown(id, request);
 	}
 
+	@Transactional
 	public SkillView update(String id, SkillView request) {
 		require(id);
-		return write(id, request);
+		return writeMarkdown(normalizeId(id), request);
 	}
 
 	@Transactional
 	public void delete(String id) {
-		Path dir = skillDir(id);
-		if (!Files.exists(dir)) {
+		String skillId = normalizeId(id);
+		if (!files.existsBySkillIdAndVersionAndPath(skillId, WORKING, SKILL_FILE)) {
 			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill not found");
 		}
-		agentSkills.deleteBySkillId(normalizeId(id));
-		try (Stream<Path> walk = Files.walk(dir)) {
-			walk.sorted(Comparator.reverseOrder()).forEach(path -> {
-				try {
-					Files.deleteIfExists(path);
-				}
-				catch (IOException ex) {
-					throw new IllegalStateException("Failed to delete " + path, ex);
-				}
-			});
-		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to delete skill " + id, ex);
-		}
+		agentSkills.deleteBySkillId(skillId);
+		files.deleteBySkillId(skillId);
+		versions.deleteBySkillId(skillId);
 	}
 
 	public List<String> listFiles(String id) {
@@ -124,152 +105,138 @@ public class SkillService {
 	}
 
 	public SkillFileView readFile(String id, String relativePath, Integer version) {
-		Path root = contentRoot(id, version);
-		Path file = SkillPaths.resolve(root, relativePath);
-		if (!Files.isRegularFile(file)) {
-			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill file not found");
-		}
-		try {
-			if (Files.size(file) > MAX_FILE_BYTES) {
-				throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Skill file is too large");
-			}
-			return new SkillFileView(SkillPaths.posixRelative(root, file), Files.readString(file));
-		}
-		catch (ResponseStatusException ex) {
-			throw ex;
-		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to read " + relativePath, ex);
-		}
-	}
-
-	public SkillFileView writeFile(String id, String relativePath, String content) {
-		require(id);
-		SkillPaths.assertFile(relativePath);
-		Path file = SkillPaths.resolve(skillDir(id), relativePath);
-		try {
-			Files.createDirectories(file.getParent());
-			byte[] bytes = (content == null ? "" : content).getBytes(StandardCharsets.UTF_8);
-			if (bytes.length > MAX_FILE_BYTES) {
-				throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Skill file is too large");
-			}
-			Files.write(file, bytes);
-			if ("SKILL.md".equals(SkillPaths.posixRelative(skillDir(id), file))) {
-				return readFile(id, "SKILL.md");
-			}
-			return new SkillFileView(SkillPaths.posixRelative(skillDir(id), file), content == null ? "" : content);
-		}
-		catch (ResponseStatusException ex) {
-			throw ex;
-		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to write " + relativePath, ex);
-		}
-	}
-
-	public void deleteFile(String id, String relativePath) {
 		String path = SkillPaths.normalizeRelative(relativePath);
-		if ("SKILL.md".equals(path)) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot delete SKILL.md; delete the skill instead");
+		int storedVersion = resolveVersion(id, version);
+		SkillFileEntity file = files.findBySkillIdAndVersionAndPath(normalizeId(id), storedVersion, path)
+				.filter(row -> !row.isDirectory())
+				.orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill file not found"));
+		String content = file.getContent() == null ? "" : file.getContent();
+		if (content.getBytes(StandardCharsets.UTF_8).length > MAX_FILE_BYTES) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Skill file is too large");
 		}
-		Path target = SkillPaths.resolve(skillDir(id), path);
-		if (!Files.exists(target)) {
-			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill file not found");
-		}
-		deleteRecursively(target);
+		return new SkillFileView(path, content);
 	}
 
-	public SkillFileView renameFile(String id, String from, String to) {
-		require(id);
-		String sourcePath = SkillPaths.normalizeRelative(from);
-		String destPath = SkillPaths.normalizeRelative(to);
-		if ("SKILL.md".equals(sourcePath) || "SKILL.md".equals(destPath)) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot rename SKILL.md");
+	@Transactional
+	public SkillFileView writeFile(String id, String relativePath, String content) {
+		String skillId = normalizeId(id);
+		require(skillId);
+		String path = SkillPaths.normalizeRelative(relativePath);
+		SkillPaths.assertFile(path);
+		String text = content == null ? "" : content;
+		if (text.getBytes(StandardCharsets.UTF_8).length > MAX_FILE_BYTES) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Skill file is too large");
 		}
-		Path source = SkillPaths.resolve(skillDir(id), sourcePath);
-		Path dest = SkillPaths.resolve(skillDir(id), destPath);
-		if (!Files.exists(source)) {
-			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill file not found");
-		}
-		if (Files.exists(dest)) {
+		ensureParents(skillId, WORKING, path);
+		SkillFileEntity row = files.findBySkillIdAndVersionAndPath(skillId, WORKING, path).orElse(null);
+		if (row != null && row.isDirectory()) {
 			throw new ResponseStatusException(HttpStatus.CONFLICT, "Target already exists");
 		}
-		try {
-			Files.createDirectories(dest.getParent());
-			Files.move(source, dest);
-			if (Files.isRegularFile(dest)) {
-				return readFile(id, destPath);
-			}
-			return new SkillFileView(destPath, "");
+		if (row == null) {
+			row = newRow(skillId, WORKING, path, false, text);
 		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to rename " + sourcePath, ex);
+		else {
+			row.setContent(text);
+			row.setUpdatedAt(Instant.now());
 		}
+		files.save(row);
+		return new SkillFileView(path, text);
 	}
 
+	@Transactional
+	public void deleteFile(String id, String relativePath) {
+		String skillId = normalizeId(id);
+		String path = SkillPaths.normalizeRelative(relativePath);
+		if (SKILL_FILE.equals(path)) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot delete SKILL.md; delete the skill instead");
+		}
+		List<SkillFileEntity> matched = files.findBySkillIdAndVersionOrderByPathAsc(skillId, WORKING).stream()
+				.filter(row -> matchesTree(row.getPath(), path))
+				.toList();
+		if (matched.isEmpty()) {
+			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill file not found");
+		}
+		files.deleteAll(matched);
+	}
+
+	@Transactional
+	public SkillFileView renameFile(String id, String from, String to) {
+		String skillId = normalizeId(id);
+		require(skillId);
+		String sourcePath = SkillPaths.normalizeRelative(from);
+		String destPath = SkillPaths.normalizeRelative(to);
+		if (SKILL_FILE.equals(sourcePath) || SKILL_FILE.equals(destPath)) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot rename SKILL.md");
+		}
+		if (destPath.equals(sourcePath) || destPath.startsWith(sourcePath + "/")) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid skill file path");
+		}
+		List<SkillFileEntity> rows = files.findBySkillIdAndVersionOrderByPathAsc(skillId, WORKING);
+		List<SkillFileEntity> matched = rows.stream().filter(row -> matchesTree(row.getPath(), sourcePath)).toList();
+		if (matched.isEmpty()) {
+			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill file not found");
+		}
+		boolean destExists = rows.stream().anyMatch(row -> matchesTree(row.getPath(), destPath));
+		if (destExists) {
+			throw new ResponseStatusException(HttpStatus.CONFLICT, "Target already exists");
+		}
+		boolean directory = matched.stream().anyMatch(row -> row.getPath().equals(sourcePath) && row.isDirectory());
+		ensureParents(skillId, WORKING, destPath);
+		for (SkillFileEntity row : matched) {
+			String suffix = row.getPath().equals(sourcePath) ? "" : row.getPath().substring(sourcePath.length());
+			row.setPath(destPath + suffix);
+			row.setUpdatedAt(Instant.now());
+		}
+		files.saveAll(matched);
+		if (directory) {
+			return new SkillFileView(destPath, "");
+		}
+		return readFile(skillId, destPath);
+	}
+
+	@Transactional
 	public void createDirectory(String id, String relativePath) {
-		require(id);
-		SkillPaths.assertDirectory(relativePath);
-		Path dir = SkillPaths.resolve(skillDir(id), relativePath);
-		try {
-			Files.createDirectories(dir);
-		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to create directory " + relativePath, ex);
-		}
+		String skillId = normalizeId(id);
+		require(skillId);
+		String path = SkillPaths.normalizeRelative(relativePath);
+		SkillPaths.assertDirectory(path);
+		ensureDirectory(skillId, WORKING, path);
 	}
 
 	public List<SkillVersionView> listVersions(String id) {
-		require(id);
-		Path versions = versionsRoot(id);
-		if (!Files.isDirectory(versions)) {
-			return List.of();
-		}
-		try (Stream<Path> stream = Files.list(versions)) {
-			return stream
-					.filter(Files::isDirectory)
-					.map(Path::getFileName)
-					.map(Path::toString)
-					.filter(name -> name.matches("[0-9]+"))
-					.map(Integer::parseInt)
-					.sorted(Comparator.reverseOrder())
-					.map(version -> toVersionView(id, version))
-					.toList();
-		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to list versions", ex);
-		}
+		String skillId = normalizeId(id);
+		require(skillId);
+		return versions.findBySkillIdOrderByVersionDesc(skillId).stream()
+				.map(this::toVersionView)
+				.toList();
 	}
 
+	@Transactional
 	public SkillVersionView publishVersion(String id) {
-		require(id);
-		int version = nextVersion(id);
-		Path dest = versionsRoot(id).resolve(String.valueOf(version));
-		try {
-			Files.createDirectories(dest);
-			copyTree(skillDir(id), dest);
-		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to publish version", ex);
-		}
-		return toVersionView(id, version);
+		String skillId = normalizeId(id);
+		require(skillId);
+		int version = latestVersionNumber(skillId) + 1;
+		List<SkillFileEntity> copies = files.findBySkillIdAndVersionOrderByPathAsc(skillId, WORKING).stream()
+				.map(row -> copyRow(row, version))
+				.toList();
+		files.saveAll(copies);
+		SkillVersionEntity published = newVersion(skillId, version, Instant.now());
+		versions.save(published);
+		return toVersionView(published);
 	}
 
+	@Transactional
 	public void restoreVersion(String id, int version) {
-		Path source = versionDir(id, version);
-		Path dest = skillDir(id);
-		try (Stream<Path> children = Files.list(dest)) {
-			for (Path child : children.toList()) {
-				if (".versions".equals(child.getFileName().toString())) {
-					continue;
-				}
-				deleteRecursively(child);
-			}
-			copyTree(source, dest);
+		String skillId = normalizeId(id);
+		require(skillId);
+		if (versions.findBySkillIdAndVersion(skillId, version).isEmpty()) {
+			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Version not found");
 		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to restore version " + version, ex);
-		}
+		List<SkillFileEntity> snapshot = files.findBySkillIdAndVersionOrderByPathAsc(skillId, version);
+		List<SkillFileEntity> current = files.findBySkillIdAndVersionOrderByPathAsc(skillId, WORKING);
+		files.deleteAll(current);
+		files.flush();
+		files.saveAll(snapshot.stream().map(row -> copyRow(row, WORKING)).toList());
 	}
 
 	public String catalogPrompt(List<String> skillIds) {
@@ -301,7 +268,7 @@ public class SkillService {
 
 	public String loadForTool(String id) {
 		SkillView skill = require(id);
-		List<String> files = listFiles(id);
+		List<String> entries = listFiles(id);
 		StringBuilder out = new StringBuilder();
 		out.append("# ").append(skill.name()).append(" (`").append(skill.id()).append("`)\n\n");
 		if (skill.description() != null && !skill.description().isBlank()) {
@@ -309,12 +276,12 @@ public class SkillService {
 		}
 		out.append(skill.body() == null ? "" : skill.body().trim());
 		out.append("\n\n## 可按需加载的文件\n");
-		if (files.isEmpty()) {
+		if (entries.isEmpty()) {
 			out.append("（无额外文件）\n");
 		}
 		else {
-			for (String path : files) {
-				if ("SKILL.md".equals(path)) {
+			for (String path : entries) {
+				if (SKILL_FILE.equals(path)) {
 					continue;
 				}
 				if (SkillPaths.isScript(path)) {
@@ -329,15 +296,110 @@ public class SkillService {
 	}
 
 	public String runScript(String id, String script, List<String> args) {
-		require(id);
+		String skillId = normalizeId(id);
+		require(skillId);
 		String relative = SkillPaths.scriptFileName(script);
-		Path file = SkillPaths.resolve(skillDir(id), relative);
-		if (!Files.isRegularFile(file)) {
+		List<SkillFileEntity> rows = files.findBySkillIdAndVersionOrderByPathAsc(skillId, WORKING);
+		boolean present = rows.stream().anyMatch(row -> relative.equals(row.getPath()) && !row.isDirectory());
+		if (!present) {
 			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Script not found");
 		}
+		Path temp;
+		try {
+			temp = Files.createTempDirectory("agent-skill-");
+			materialize(temp, rows);
+		}
+		catch (IOException ex) {
+			return "ERROR: failed to start script: " + ex.getMessage();
+		}
+		try {
+			return executeScript(temp.resolve(relative), temp, args);
+		}
+		finally {
+			deleteRecursively(temp);
+		}
+	}
+
+	@Transactional
+	public boolean importSkillDirectory(Path skillDir) throws IOException {
+		if (skillDir == null || !Files.isDirectory(skillDir)) {
+			return false;
+		}
+		String id;
+		try {
+			id = normalizeId(skillDir.getFileName().toString());
+		}
+		catch (ResponseStatusException ex) {
+			return false;
+		}
+		if (!Files.isRegularFile(skillDir.resolve(SKILL_FILE))) {
+			return false;
+		}
+		if (files.existsBySkillIdAndVersionAndPath(id, WORKING, SKILL_FILE)) {
+			return false;
+		}
+		importTree(id, WORKING, skillDir);
+		Path versionRoot = skillDir.resolve(".versions");
+		if (Files.isDirectory(versionRoot)) {
+			try (Stream<Path> stream = Files.list(versionRoot)) {
+				for (Path child : stream.filter(Files::isDirectory).toList()) {
+					String name = child.getFileName().toString();
+					if (!name.matches("[0-9]+")) {
+						continue;
+					}
+					int version = Integer.parseInt(name);
+					if (version < 1) {
+						continue;
+					}
+					importTree(id, version, child);
+					Instant createdAt = Files.getLastModifiedTime(child).toInstant();
+					versions.save(newVersion(id, version, createdAt));
+				}
+			}
+		}
+		return true;
+	}
+
+	private void importTree(String skillId, int version, Path root) throws IOException {
+		try (Stream<Path> walk = Files.walk(root)) {
+			for (Path source : walk.toList()) {
+				if (source.equals(root)) {
+					continue;
+				}
+				String relative = root.relativize(source).toString().replace('\\', '/');
+				if (SkillPaths.isProtected(relative)) {
+					continue;
+				}
+				String path;
+				try {
+					path = SkillPaths.normalizeRelative(relative);
+				}
+				catch (ResponseStatusException ex) {
+					continue;
+				}
+				if (Files.isDirectory(source)) {
+					if (files.existsBySkillIdAndVersionAndPath(skillId, version, path)) {
+						continue;
+					}
+					files.save(newRow(skillId, version, path, true, ""));
+					continue;
+				}
+				if (!Files.isRegularFile(source)) {
+					continue;
+				}
+				String content = Files.readString(source);
+				if (content.getBytes(StandardCharsets.UTF_8).length > MAX_FILE_BYTES) {
+					throw new IllegalStateException("Skill file is too large: " + path);
+				}
+				files.save(newRow(skillId, version, path, false, content));
+			}
+		}
+	}
+
+	private String executeScript(Path script, Path workDir, List<String> args) {
 		List<String> command = new ArrayList<>();
-		command.addAll(interpreterFor(file));
-		command.add(file.toAbsolutePath().toString());
+		command.addAll(interpreterFor(script));
+		command.add(script.toAbsolutePath().toString());
 		if (args != null) {
 			int count = 0;
 			for (String arg : args) {
@@ -354,9 +416,9 @@ public class SkillService {
 			}
 		}
 		ProcessBuilder builder = new ProcessBuilder(command);
-		builder.directory(skillDir(id).toFile());
+		builder.directory(workDir.toFile());
 		builder.redirectErrorStream(true);
-		builder.environment().put("SKILL_DIR", skillDir(id).toString());
+		builder.environment().put("SKILL_DIR", workDir.toString());
 		try {
 			Process process = builder.start();
 			boolean finished = process.waitFor(scriptTimeout.toMillis(), TimeUnit.MILLISECONDS);
@@ -380,6 +442,23 @@ public class SkillService {
 		}
 		catch (IOException ex) {
 			return "ERROR: failed to start script: " + ex.getMessage();
+		}
+	}
+
+	private void materialize(Path root, List<SkillFileEntity> rows) throws IOException {
+		for (SkillFileEntity row : rows) {
+			if (!row.isDirectory()) {
+				continue;
+			}
+			Files.createDirectories(root.resolve(row.getPath()));
+		}
+		for (SkillFileEntity row : rows) {
+			if (row.isDirectory()) {
+				continue;
+			}
+			Path file = root.resolve(row.getPath());
+			Files.createDirectories(file.getParent());
+			Files.writeString(file, row.getContent() == null ? "" : row.getContent());
 		}
 	}
 
@@ -409,20 +488,24 @@ public class SkillService {
 		return "python";
 	}
 
-	private SkillView write(String id, SkillView request) {
-		try {
-			Files.createDirectories(skillDir(id));
-			SkillView stored = new SkillView(
-					id,
-					blankTo(request.name(), id),
-					nullToEmpty(request.description()),
-					nullToEmpty(request.body()));
-			Files.writeString(skillFile(id), SkillMarkdown.write(stored));
-			return stored.withLatestVersion(latestVersionNumber(id));
+	private SkillView writeMarkdown(String id, SkillView request) {
+		SkillView stored = new SkillView(
+				id,
+				blankTo(request.name(), id),
+				nullToEmpty(request.description()),
+				nullToEmpty(request.body()));
+		String text = SkillMarkdown.write(stored);
+		SkillFileEntity row = files.findBySkillIdAndVersionAndPath(id, WORKING, SKILL_FILE).orElse(null);
+		if (row == null) {
+			row = newRow(id, WORKING, SKILL_FILE, false, text);
 		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to write skill " + id, ex);
+		else {
+			row.setContent(text);
+			row.setDirectory(false);
+			row.setUpdatedAt(Instant.now());
 		}
+		files.save(row);
+		return stored.withLatestVersion(latestVersionNumber(id));
 	}
 
 	private SkillView readOrSkip(String id) {
@@ -435,109 +518,107 @@ public class SkillService {
 	}
 
 	private List<String> listEntries(String id, Integer version, boolean filesOnly) {
-		Path root = contentRoot(id, version);
-		try (Stream<Path> walk = Files.walk(root)) {
-			return walk
-					.filter(path -> !path.equals(root))
-					.filter(path -> !isProtected(root, path))
-					.filter(path -> !filesOnly || Files.isRegularFile(path))
-					.map(path -> {
-						String relative = SkillPaths.posixRelative(root, path);
-						return Files.isDirectory(path) ? relative + "/" : relative;
-					})
-					.sorted(Comparator.naturalOrder())
-					.toList();
-		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to list skill files " + id, ex);
-		}
+		int storedVersion = resolveVersion(id, version);
+		return files.findBySkillIdAndVersionOrderByPathAsc(normalizeId(id), storedVersion).stream()
+				.map(row -> row.isDirectory() ? row.getPath() + "/" : row.getPath())
+				.filter(path -> !filesOnly || !path.endsWith("/"))
+				.sorted(Comparator.naturalOrder())
+				.toList();
 	}
 
-	private Path contentRoot(String id, Integer version) {
+	private int resolveVersion(String id, Integer version) {
+		String skillId = normalizeId(id);
 		if (version == null) {
-			if (!Files.exists(skillFile(id))) {
+			if (!files.existsBySkillIdAndVersionAndPath(skillId, WORKING, SKILL_FILE)) {
 				throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill not found");
 			}
-			return skillDir(id);
+			return WORKING;
 		}
-		return versionDir(id, version);
-	}
-
-	private Path versionsRoot(String id) {
-		return skillDir(id).resolve(".versions");
-	}
-
-	private Path versionDir(String id, int version) {
 		if (version < 1) {
 			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid version");
 		}
-		Path dir = versionsRoot(id).resolve(String.valueOf(version)).normalize();
-		if (!dir.startsWith(versionsRoot(id)) || !Files.isDirectory(dir)) {
+		if (versions.findBySkillIdAndVersion(skillId, version).isEmpty()) {
 			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Version not found");
 		}
-		return dir;
+		return version;
 	}
 
-	private int nextVersion(String id) {
-		return latestVersionNumber(id) + 1;
+	private int latestVersionNumber(String skillId) {
+		return versions.findBySkillIdOrderByVersionDesc(skillId).stream()
+				.mapToInt(SkillVersionEntity::getVersion)
+				.max()
+				.orElse(0);
 	}
 
-	private int latestVersionNumber(String id) {
-		Path versions = versionsRoot(id);
-		if (!Files.isDirectory(versions)) {
-			return 0;
+	private void ensureParents(String skillId, int version, String path) {
+		int slash = path.lastIndexOf('/');
+		if (slash <= 0) {
+			return;
 		}
-		try (Stream<Path> stream = Files.list(versions)) {
-			return stream
-					.filter(Files::isDirectory)
-					.map(Path::getFileName)
-					.map(Path::toString)
-					.filter(name -> name.matches("[0-9]+"))
-					.mapToInt(Integer::parseInt)
-					.max()
-					.orElse(0);
-		}
-		catch (IOException ex) {
-			throw new IllegalStateException("Failed to list versions", ex);
-		}
+		ensureDirectory(skillId, version, path.substring(0, slash));
 	}
 
-	private SkillVersionView toVersionView(String id, int version) {
-		Path dir = versionDir(id, version);
-		try {
-			Instant instant = Files.getLastModifiedTime(dir).toInstant();
-			String createdAt = DateTimeFormatter.ISO_OFFSET_DATE_TIME
-					.withZone(ZoneId.systemDefault())
-					.format(instant);
-			return new SkillVersionView(version, createdAt);
-		}
-		catch (IOException ex) {
-			return new SkillVersionView(version, "");
-		}
-	}
-
-	private void copyTree(Path from, Path to) throws IOException {
-		try (Stream<Path> walk = Files.walk(from)) {
-			for (Path source : walk.toList()) {
-				if (isProtected(from, source)) {
-					continue;
-				}
-				Path dest = to.resolve(from.relativize(source)).normalize();
-				if (!dest.startsWith(to)) {
-					throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid skill file path");
-				}
-				if (Files.isDirectory(source)) {
-					Files.createDirectories(dest);
-				}
-				else {
-					Files.createDirectories(dest.getParent());
-					Files.copy(source, dest, StandardCopyOption.REPLACE_EXISTING);
-				}
+	private void ensureDirectory(String skillId, int version, String path) {
+		String[] parts = path.split("/");
+		StringBuilder current = new StringBuilder();
+		for (String part : parts) {
+			if (!current.isEmpty()) {
+				current.append('/');
 			}
+			current.append(part);
+			String dir = current.toString();
+			SkillFileEntity existing = files.findBySkillIdAndVersionAndPath(skillId, version, dir).orElse(null);
+			if (existing != null) {
+				if (!existing.isDirectory()) {
+					throw new ResponseStatusException(HttpStatus.CONFLICT, "Target already exists");
+				}
+				continue;
+			}
+			files.save(newRow(skillId, version, dir, true, ""));
 		}
+	}
+
+	private SkillVersionView toVersionView(SkillVersionEntity version) {
+		String createdAt = version.getCreatedAt() == null
+				? ""
+				: DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneId.systemDefault()).format(version.getCreatedAt());
+		return new SkillVersionView(version.getVersion(), createdAt);
+	}
+
+	private SkillFileEntity newRow(String skillId, int version, String path, boolean directory, String content) {
+		SkillFileEntity row = new SkillFileEntity();
+		row.setId(UUID.randomUUID().toString());
+		row.setSkillId(skillId);
+		row.setVersion(version);
+		row.setPath(path);
+		row.setDirectory(directory);
+		row.setContent(directory ? "" : content);
+		row.setUpdatedAt(Instant.now());
+		return row;
+	}
+
+	private SkillFileEntity copyRow(SkillFileEntity source, int version) {
+		return newRow(
+				source.getSkillId(),
+				version,
+				source.getPath(),
+				source.isDirectory(),
+				source.getContent() == null ? "" : source.getContent());
+	}
+
+	private SkillVersionEntity newVersion(String skillId, int version, Instant createdAt) {
+		SkillVersionEntity row = new SkillVersionEntity();
+		row.setId(UUID.randomUUID().toString());
+		row.setSkillId(skillId);
+		row.setVersion(version);
+		row.setCreatedAt(createdAt);
+		return row;
 	}
 
 	private void deleteRecursively(Path target) {
+		if (!Files.exists(target)) {
+			return;
+		}
 		try (Stream<Path> walk = Files.walk(target)) {
 			walk.sorted(Comparator.reverseOrder()).forEach(path -> {
 				try {
@@ -553,24 +634,8 @@ public class SkillService {
 		}
 	}
 
-	private static boolean isProtected(Path root, Path path) {
-		if (path.equals(root)) {
-			return false;
-		}
-		return SkillPaths.isProtected(SkillPaths.posixRelative(root, path));
-	}
-
-	private Path skillDir(String id) {
-		String safe = normalizeId(id);
-		Path dir = skillsDir.resolve(safe).normalize();
-		if (!dir.startsWith(skillsDir)) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid skill id");
-		}
-		return dir;
-	}
-
-	private Path skillFile(String id) {
-		return skillDir(id).resolve("SKILL.md");
+	private static boolean matchesTree(String path, String root) {
+		return path.equals(root) || path.startsWith(root + "/");
 	}
 
 	static String normalizeId(String id) {

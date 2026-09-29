@@ -5,25 +5,22 @@ import {
   ApiOutlined,
   ApartmentOutlined,
   CloudOutlined,
-  CommentOutlined,
   DatabaseOutlined,
-  HistoryOutlined,
   MessageOutlined,
   RobotOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import { listAgents, listHttpTools, listKnowledgeBases, listProviders, listRemoteMcps, listSkills, type Agent, type HttpConnector, type KnowledgeBase, type Provider, type RemoteMcp, type Skill } from './api'
 import { AgentsPage } from './AgentsPage'
-import { CallsPage } from './CallsPage'
-import { ChatPage } from './ChatPage'
 import { ConnectorsPage } from './ConnectorsPage'
+import { FeishuPage } from './FeishuPage'
 import { KnowledgePage } from './KnowledgePage'
 import { ProvidersPage } from './ProvidersPage'
 import { SkillsPage } from './SkillsPage'
 
-type NavId = 'chat' | 'calls' | 'providers' | 'agents' | 'skills' | 'connectors' | 'knowledge'
+type NavId = 'providers' | 'agents' | 'skills' | 'connectors' | 'knowledge' | 'feishu'
 
-const NAV_IDS: NavId[] = ['chat', 'calls', 'agents', 'skills', 'connectors', 'knowledge', 'providers']
+const NAV_IDS: NavId[] = ['agents', 'skills', 'connectors', 'knowledge', 'feishu', 'providers']
 
 function pageFromHash(): NavId {
   const raw = window.location.hash.replace(/^#\/?/, '')
@@ -31,16 +28,14 @@ function pageFromHash(): NavId {
 }
 
 const NAV_ITEMS: MenuProps['items'] = [
-  { key: 'chat', icon: <CommentOutlined />, label: '试聊 Playground' },
-  { key: 'calls', icon: <HistoryOutlined />, label: '调用记录 Trace' },
   { key: 'agents', icon: <RobotOutlined />, label: '智能体 Agent' },
   { key: 'skills', icon: <ThunderboltOutlined />, label: '技能 Skill' },
   { key: 'connectors', icon: <ApiOutlined />, label: '连接器 MCP' },
   { key: 'knowledge', icon: <DatabaseOutlined />, label: '知识库 Knowledge' },
+  { key: 'feishu', icon: <MessageOutlined />, label: '飞书 Feishu' },
   { key: 'providers', icon: <CloudOutlined />, label: '模型提供商 Providers' },
   { type: 'divider' },
   { key: 'later-wf', icon: <ApartmentOutlined />, label: '工作流 Workflow', disabled: true },
-  { key: 'later-fs', icon: <MessageOutlined />, label: '飞书 Feishu', disabled: true },
 ]
 
 export default function App() {
@@ -146,10 +141,7 @@ export default function App() {
         {page === 'skills' ? (
           <SkillsPage skills={skills} onChanged={refresh} onError={setError} />
         ) : null}
-        {page === 'chat' ? (
-          <ChatPage agents={agents} skills={skills} httpTools={httpTools} remoteMcps={remoteMcps} onError={setError} />
-        ) : null}
-        {page === 'calls' ? <CallsPage agents={agents} onError={setError} /> : null}
+        {page === 'feishu' ? <FeishuPage agents={agents} onError={setError} /> : null}
       </Layout.Content>
     </Layout>
   )

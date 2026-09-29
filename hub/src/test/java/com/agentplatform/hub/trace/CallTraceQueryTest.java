@@ -21,7 +21,7 @@ class CallTraceQueryTest {
 		recorder.model("demo-model", "已查到", 3, 2, 5, 0, recorder.mark());
 		traces.save(recorder.success());
 
-		CallDtos.Summary summary = traces.list("agent-x").get(0);
+		CallDtos.Summary summary = traces.list("agent-x", "conv-x").get(0);
 		assertEquals("结算助手", summary.agentName());
 		assertEquals("查一下订单", summary.userInput());
 		assertEquals(5, summary.totalTokens());

@@ -4,26 +4,38 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.web.server.ResponseStatusException;
 
+@SpringBootTest
 class SkillServiceTest {
 
-	@TempDir
-	Path dir;
-
+	@Autowired
 	SkillService skills;
 
+	@Autowired
+	SkillFileRepository files;
+
+	@Autowired
+	SkillVersionRepository versions;
+
+	@Autowired
+	AgentSkillRepository agentSkills;
+
 	@BeforeEach
-	void setUp() throws Exception {
-		skills = new SkillService(dir.toString(), mock(AgentSkillRepository.class), 8000);
+	void clean() {
+		agentSkills.deleteAll();
+		files.deleteAll();
+		versions.deleteAll();
 	}
 
 	@Test
@@ -74,6 +86,28 @@ class SkillServiceTest {
 		List<String> tree = skills.listTree("customer-reply", null);
 		assertTrue(tree.contains("references/payload.md"));
 		assertFalse(tree.stream().anyMatch(path -> path.startsWith(".versions")));
+	}
+
+	@Test
+	void importsFolderIntoDatabase(@TempDir Path dir) throws Exception {
+		Path skill = dir.resolve("customer-reply");
+		Files.createDirectories(skill.resolve("references"));
+		Files.writeString(skill.resolve("SKILL.md"), SkillMarkdown.write(
+				new SkillView("customer-reply", "客服回复", "投诉时使用", "磁盘正文")));
+		Files.writeString(skill.resolve("references/input.md"), "入参");
+		Path published = skill.resolve(".versions/1");
+		Files.createDirectories(published);
+		Files.writeString(published.resolve("SKILL.md"), SkillMarkdown.write(
+				new SkillView("customer-reply", "客服回复", "投诉时使用", "旧正文")));
+
+		assertTrue(skills.importSkillDirectory(skill));
+		assertFalse(skills.importSkillDirectory(skill));
+		assertEquals("磁盘正文", skills.require("customer-reply").body());
+		assertEquals(1, skills.require("customer-reply").latestVersion());
+		assertEquals("入参", skills.readFile("customer-reply", "references/input.md").content());
+		assertEquals("旧正文", SkillMarkdown.parse(
+				"customer-reply",
+				skills.readFile("customer-reply", "SKILL.md", 1).content()).body());
 	}
 
 }

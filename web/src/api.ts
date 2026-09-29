@@ -775,9 +775,16 @@ export type CallDetail = {
   spans: CallSpan[]
 }
 
-export async function listCalls(agentId?: string): Promise<CallSummary[]> {
-  const query = agentId ? `?agentId=${encodeURIComponent(agentId)}` : ''
-  const res = await fetch(`/api/calls${query}`)
+export async function listCalls(agentId?: string, conversationId?: string): Promise<CallSummary[]> {
+  const params = new URLSearchParams()
+  if (agentId) {
+    params.set('agentId', agentId)
+  }
+  if (conversationId) {
+    params.set('conversationId', conversationId)
+  }
+  const query = params.toString()
+  const res = await fetch(query ? `/api/calls?${query}` : '/api/calls')
   if (!res.ok) {
     await throwApiError(res)
   }
@@ -888,5 +895,82 @@ export async function streamChat(
         onDelta(delta)
       }
     }
+  }
+}
+
+export type FeishuBot = {
+  id: string
+  name: string
+  appId: string
+  secretLast4: string
+  secretConfigured: boolean
+  tokenLast4: string
+  tokenConfigured: boolean
+  encryptConfigured: boolean
+  agentId: string
+  agentName: string
+  enabled: boolean
+  publicBaseUrl: string
+  callbackPath: string
+  callbackUrl: string | null
+  lastError: string | null
+  lastEventAt: string | null
+}
+
+export type UpsertFeishuBot = {
+  name: string
+  appId: string
+  appSecret?: string
+  verificationToken?: string
+  encryptKey?: string
+  encryptEnabled: boolean
+  agentId: string
+  enabled: boolean
+  publicBaseUrl?: string
+}
+
+export async function listFeishuBots(): Promise<FeishuBot[]> {
+  const res = await fetch('/api/feishu/bots')
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  return res.json()
+}
+
+export async function createFeishuBot(body: UpsertFeishuBot): Promise<FeishuBot> {
+  const res = await fetch('/api/feishu/bots', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  return res.json()
+}
+
+export async function updateFeishuBot(id: string, body: UpsertFeishuBot): Promise<FeishuBot> {
+  const res = await fetch(`/api/feishu/bots/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  return res.json()
+}
+
+export async function deleteFeishuBot(id: string): Promise<void> {
+  const res = await fetch(`/api/feishu/bots/${id}`, { method: 'DELETE' })
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+}
+
+export async function probeFeishuBot(id: string): Promise<void> {
+  const res = await fetch(`/api/feishu/bots/${id}/probe`, { method: 'POST' })
+  if (!res.ok) {
+    await throwApiError(res)
   }
 }

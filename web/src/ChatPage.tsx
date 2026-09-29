@@ -1,56 +1,21 @@
-import { useEffect, useState } from 'react'
-import { Button, Empty, Input, Popconfirm, Select, Typography } from 'antd'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { Button, Empty, Input, Popconfirm, Typography } from 'antd'
 import {
   deleteConversation,
   listConversations,
   listMessages,
   streamChat,
-  type Agent,
   type ChatMessage,
   type Conversation,
-  type HttpConnector,
-  type MemoryMode,
-  type RemoteMcp,
-  type Skill,
 } from './api'
 
-function memoryModeLabel(mode: MemoryMode | undefined) {
-  if (mode === 'CROSS') {
-    return '跨会话记忆'
-  }
-  if (mode === 'NONE') {
-    return '无记忆'
-  }
-  return '当前会话记忆'
-}
-
-export function ChatPage({
-  agents,
-  skills,
-  httpTools,
-  remoteMcps,
-  onError,
-}: {
-  agents: Agent[]
-  skills: Skill[]
-  httpTools: HttpConnector[]
-  remoteMcps: RemoteMcp[]
-  onError: (message: string) => void
-}) {
-  const [agentId, setAgentId] = useState('')
+function useAgentChat(agentId: string, onError: (message: string) => void) {
   const [conversationId, setConversationId] = useState('')
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [input, setInput] = useState('用一句话介绍你自己')
+  const [input, setInput] = useState('')
   const [pending, setPending] = useState(false)
   const [status, setStatus] = useState('')
-  const current = agents.find((item) => item.id === agentId)
-
-  useEffect(() => {
-    if (!agentId && agents[0]) {
-      setAgentId(agents[0].id)
-    }
-  }, [agents, agentId])
 
   useEffect(() => {
     if (!agentId) {
@@ -59,13 +24,24 @@ export function ChatPage({
       setMessages([])
       return
     }
+    let cancelled = false
     void listConversations(agentId)
       .then((items) => {
+        if (cancelled) {
+          return
+        }
         setConversations(items)
         setConversationId('')
         setMessages([])
       })
-      .catch((err: unknown) => onError(err instanceof Error ? err.message : String(err)))
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          onError(err instanceof Error ? err.message : String(err))
+        }
+      })
+    return () => {
+      cancelled = true
+    }
   }, [agentId, onError])
 
   async function loadConversation(id: string) {
@@ -79,6 +55,20 @@ export function ChatPage({
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err))
     }
+  }
+
+  function startNew() {
+    setConversationId('')
+    setMessages([])
+  }
+
+  async function removeConversation(id: string) {
+    await deleteConversation(id)
+    if (conversationId === id) {
+      setConversationId('')
+      setMessages([])
+    }
+    setConversations(await listConversations(agentId))
   }
 
   async function send() {
@@ -122,128 +112,181 @@ export function ChatPage({
     }
   }
 
-  const boundNames = current
-    ? [
-        ...(current.skillIds ?? []).map((id) => skills.find((item) => item.id === id)?.name ?? id),
-        ...(current.httpToolIds ?? []).map((id) => httpTools.find((item) => item.id === id)?.name ?? id),
-        ...(current.mcpServerIds ?? []).map((id) => remoteMcps.find((item) => item.id === id)?.name ?? id),
-      ]
-    : []
+  return {
+    conversationId,
+    conversations,
+    messages,
+    input,
+    setInput,
+    pending,
+    status,
+    loadConversation,
+    startNew,
+    removeConversation,
+    send,
+  }
+}
 
+function ChatTranscript({
+  messages,
+  status,
+  emptyText,
+}: {
+  messages: ChatMessage[]
+  status: string
+  emptyText: string
+}) {
   return (
-    <section className="chat-page">
-      <aside className="chat-side">
-        <div className="chat-side-head">
-          <Typography.Text type="secondary">智能体</Typography.Text>
-          <Select
-            style={{ width: '100%', marginTop: 8 }}
-            value={agentId || undefined}
-            placeholder="请先创建智能体"
-            onChange={setAgentId}
-            options={agents.map((item) => ({ value: item.id, label: item.name }))}
-          />
-          {current ? (
-            <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0', fontSize: 12 }}>
-              {current.providerName} / {current.model} · {memoryModeLabel(current.memoryMode)}
-              {boundNames.length ? ` · ${boundNames.join('、')}` : ''}
-            </Typography.Paragraph>
-          ) : null}
-        </div>
-        <div className="chat-history-head">
-          <Typography.Text type="secondary">对话历史</Typography.Text>
-          <Button
-            size="small"
-            disabled={!agentId || pending}
-            onClick={() => {
-              setConversationId('')
-              setMessages([])
-            }}
-          >
-            新对话
-          </Button>
-        </div>
-        <div className="chat-history">
-          {conversations.length === 0 ? (
-            <Typography.Paragraph type="secondary" style={{ margin: 0, fontSize: 13 }}>
-              还没有对话
-            </Typography.Paragraph>
-          ) : (
-            conversations.map((item) => (
-              <div key={item.id} className={item.id === conversationId ? 'chat-history-item active' : 'chat-history-item'}>
-                <button type="button" disabled={pending} onClick={() => void loadConversation(item.id)}>
-                  {item.title || '未命名对话'}
-                </button>
-                <Popconfirm
-                  title="删除这个会话？"
-                  disabled={pending}
-                  onConfirm={() => {
-                    void deleteConversation(item.id)
-                      .then(async () => {
-                        if (conversationId === item.id) {
-                          setConversationId('')
-                          setMessages([])
-                        }
-                        setConversations(await listConversations(agentId))
-                      })
-                      .catch((err: unknown) => onError(err instanceof Error ? err.message : String(err)))
-                  }}
-                >
-                  <Button type="text" size="small" danger disabled={pending}>
-                    删除
-                  </Button>
-                </Popconfirm>
-              </div>
-            ))
-          )}
-        </div>
-      </aside>
-      <div className="chat-main">
-        <div className="transcript">
-          {messages.length === 0 ? (
-            <Empty description="对这个智能体发一条消息。绑定技能后，模型会先看目录再按需读取文件。" />
-          ) : null}
-          {status ? (
-            <Typography.Text type="secondary" className="status-line">
-              {status}
-            </Typography.Text>
-          ) : null}
-          {messages.map((item, index) => (
-            <article key={`${item.role}-${index}`} className={item.role}>
-              <small>{item.role === 'user' ? '你' : '助手'}</small>
-              <pre>{item.content}</pre>
-              {item.role === 'assistant' && item.citations && item.citations.length > 0 ? (
-                <div className="citations">
-                  {item.citations.map((cite, citeIndex) => (
-                    <div key={`${cite.document}-${citeIndex}`} className="citation">
-                      <strong>
-                        {cite.knowledgeBase} / {cite.document}
-                      </strong>
-                      <span>{cite.content}</span>
-                    </div>
-                  ))}
+    <>
+      {messages.length === 0 ? <Empty description={emptyText} /> : null}
+      {status ? (
+        <Typography.Text type="secondary" className="status-line">
+          {status}
+        </Typography.Text>
+      ) : null}
+      {messages.map((item, index) => (
+        <article key={`${item.role}-${index}`} className={item.role}>
+          <small>{item.role === 'user' ? '你' : '助手'}</small>
+          <pre>{item.content}</pre>
+          {item.role === 'assistant' && item.citations && item.citations.length > 0 ? (
+            <div className="citations">
+              {item.citations.map((cite, citeIndex) => (
+                <div key={`${cite.document}-${citeIndex}`} className="citation">
+                  <strong>
+                    {cite.knowledgeBase} / {cite.document}
+                  </strong>
+                  <span>{cite.content}</span>
                 </div>
-              ) : null}
-            </article>
-          ))}
-        </div>
-        <form
-          className="composer"
-          onSubmit={(event) => {
-            event.preventDefault()
-            void send()
-          }}
-        >
-          <Input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="输入消息"
-            disabled={!agentId || pending}
-          />
-          <Button type="primary" htmlType="submit" loading={pending} disabled={!agentId}>
-            发送
-          </Button>
-        </form>
-      </div>
-    </section>
+              ))}
+            </div>
+          ) : null}
+        </article>
+      ))}
+    </>
   )
 }
+
+export type AgentChatHandle = {
+  startNew: () => void
+}
+
+function formatConversationTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+  return date.toLocaleString()
+}
+
+export const AgentChatPanel = forwardRef<
+  AgentChatHandle,
+  { agentId: string; onError: (message: string) => void; onHistoryOpen: (conversationId: string | null) => void }
+>(function AgentChatPanel({ agentId, onError, onHistoryOpen }, ref) {
+    const chat = useAgentChat(agentId, onError)
+    const transcriptRef = useRef<HTMLDivElement>(null)
+    const current = chat.conversations.find((item) => item.id === chat.conversationId)
+
+    useImperativeHandle(
+      ref,
+      () => ({
+        startNew: () => {
+          chat.startNew()
+          onHistoryOpen(null)
+        },
+      }),
+      [chat.startNew, onHistoryOpen],
+    )
+
+    useEffect(() => {
+      const el = transcriptRef.current
+      if (el) {
+        el.scrollTop = el.scrollHeight
+      }
+    }, [chat.messages, chat.status])
+
+    return (
+      <div className="agent-chat">
+        <aside className="agent-history">
+          <div className="agent-history-head">历史对话</div>
+          <div className="agent-history-list">
+            {chat.conversations.length === 0 ? (
+              <Typography.Paragraph type="secondary" style={{ margin: '4px 8px', fontSize: 12 }}>
+                还没有对话
+              </Typography.Paragraph>
+            ) : (
+              chat.conversations.map((item) => (
+                <div key={item.id} className={item.id === chat.conversationId ? 'agent-history-row active' : 'agent-history-row'}>
+                  <button
+                    type="button"
+                    disabled={chat.pending}
+                    onClick={() => {
+                      onHistoryOpen(item.id)
+                      void chat.loadConversation(item.id)
+                    }}
+                  >
+                    <strong>{item.title || '未命名对话'}</strong>
+                    <small>{formatConversationTime(item.updatedAt)}</small>
+                  </button>
+                  <Popconfirm
+                    title="删除这个会话？"
+                    disabled={chat.pending}
+                    onConfirm={() => {
+                      const opened = chat.conversationId === item.id
+                      void chat.removeConversation(item.id)
+                        .then(() => {
+                          if (opened) {
+                            onHistoryOpen(null)
+                          }
+                        })
+                        .catch((err: unknown) => {
+                          onError(err instanceof Error ? err.message : String(err))
+                        })
+                    }}
+                  >
+                    <Button type="text" size="small" danger className="agent-history-delete" disabled={chat.pending}>
+                      删除
+                    </Button>
+                  </Popconfirm>
+                </div>
+              ))
+            )}
+          </div>
+        </aside>
+        <div className="agent-chat-main">
+          {current ? <div className="agent-chat-session">{current.title || '未命名对话'}</div> : null}
+          <div className="transcript" ref={transcriptRef}>
+            <ChatTranscript messages={chat.messages} status={chat.status} emptyText="发一条消息，试用当前已保存的配置。" />
+          </div>
+          <form
+            className="agent-composer"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void chat.send()
+            }}
+          >
+            <Input.TextArea
+              variant="borderless"
+              value={chat.input}
+              autoSize={{ minRows: 2, maxRows: 4 }}
+              onChange={(e) => chat.setInput(e.target.value)}
+              placeholder="输入消息，Enter 发送"
+              disabled={!agentId || chat.pending}
+              onPressEnter={(event) => {
+                if (event.shiftKey || event.nativeEvent.isComposing) {
+                  return
+                }
+                event.preventDefault()
+                void chat.send()
+              }}
+            />
+            <div className="agent-composer-bar">
+              <Button type="primary" htmlType="submit" loading={chat.pending} disabled={!agentId}>
+                发送
+              </Button>
+            </div>
+          </form>
+        </div>
+      </div>
+    )
+  },
+)
