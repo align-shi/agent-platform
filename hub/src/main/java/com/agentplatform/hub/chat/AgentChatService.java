@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -31,6 +32,8 @@ import com.agentplatform.hub.skill.SkillService;
 import com.agentplatform.hub.trace.CallTraceRecorder;
 import com.agentplatform.hub.trace.CallTraceService;
 import com.agentplatform.hub.trace.TraceTexts;
+import com.agentplatform.hub.workflow.WorkflowEntity;
+import com.agentplatform.hub.workflow.WorkflowService;
 
 @Service
 public class AgentChatService {
@@ -47,6 +50,7 @@ public class AgentChatService {
 	private final RemoteMcpService remoteMcps;
 	private final KnowledgeService knowledge;
 	private final CallTraceService callTraces;
+	private final WorkflowService workflows;
 
 	public AgentChatService(
 			AgentService agents,
@@ -58,7 +62,8 @@ public class AgentChatService {
 			HttpToolService httpTools,
 			RemoteMcpService remoteMcps,
 			KnowledgeService knowledge,
-			CallTraceService callTraces) {
+			CallTraceService callTraces,
+			@Lazy WorkflowService workflows) {
 		this.agents = agents;
 		this.providers = providers;
 		this.conversations = conversations;
@@ -69,6 +74,7 @@ public class AgentChatService {
 		this.remoteMcps = remoteMcps;
 		this.knowledge = knowledge;
 		this.callTraces = callTraces;
+		this.workflows = workflows;
 	}
 
 	public ChatDtos.Reply completeByCode(String code, String conversationId, String content) throws Exception {
@@ -99,6 +105,7 @@ public class AgentChatService {
 		List<String> skillIds = agents.skillIds(agent.getId());
 		List<HttpToolEntity> boundHttpTools = httpTools.boundEnabled(agent.getId());
 		List<BoundMcpTool> boundMcpTools = remoteMcps.boundEnabled(agent.getId(), httpToolNames(boundHttpTools));
+		List<WorkflowEntity> boundWorkflows = workflows.boundEnabled(agent.getId());
 		String apiKey = providers.decryptApiKey(provider);
 		String assistant = null;
 		Exception failed = null;
@@ -106,7 +113,7 @@ public class AgentChatService {
 			long retrievalMark = trace.mark();
 			Retrieval retrieval = retrieveKnowledge(agent, userText, sink);
 			trace.retrieval(TraceTexts.knowledge(retrieval), retrievalMark);
-			if (skillIds.isEmpty() && boundHttpTools.isEmpty() && boundMcpTools.isEmpty()) {
+			if (skillIds.isEmpty() && boundHttpTools.isEmpty() && boundMcpTools.isEmpty() && boundWorkflows.isEmpty()) {
 				assistant = runPlain(agent, provider, apiKey, conversation.getId(), retrieval, trace, sink);
 			}
 			else {
@@ -115,9 +122,11 @@ public class AgentChatService {
 						provider,
 						apiKey,
 						conversation.getId(),
+						userText,
 						skillIds,
 						boundHttpTools,
 						boundMcpTools,
+						boundWorkflows,
 						retrieval,
 						trace,
 						sink);
@@ -153,7 +162,7 @@ public class AgentChatService {
 				provider,
 				apiKey,
 				conversationId,
-				buildSystemPrompt(agent, List.of(), List.of(), List.of(), retrieval));
+				buildSystemPrompt(agent, List.of(), List.of(), List.of(), List.of(), retrieval));
 		List<ChatDtos.Message> payload = new ArrayList<>();
 		if (!prepared.system().isBlank()) {
 			payload.add(new ChatDtos.Message("system", prepared.system()));
@@ -195,9 +204,11 @@ public class AgentChatService {
 			ProviderEntity provider,
 			String apiKey,
 			String conversationId,
+			String userText,
 			List<String> skillIds,
 			List<HttpToolEntity> boundHttpTools,
 			List<BoundMcpTool> boundMcpTools,
+			List<WorkflowEntity> boundWorkflows,
 			Retrieval retrieval,
 			CallTraceRecorder trace,
 			ChatSink sink) throws Exception {
@@ -207,7 +218,7 @@ public class AgentChatService {
 				provider,
 				apiKey,
 				conversationId,
-				buildSystemPrompt(agent, skillIds, boundHttpTools, boundMcpTools, retrieval));
+				buildSystemPrompt(agent, skillIds, boundHttpTools, boundMcpTools, boundWorkflows, retrieval));
 		List<Map<String, Object>> messages = new ArrayList<>();
 		if (!prepared.system().isBlank()) {
 			messages.add(Map.of("role", "system", "content", prepared.system()));
@@ -224,6 +235,9 @@ public class AgentChatService {
 		}
 		tools.addAll(httpTools.definitions(boundHttpTools));
 		tools.addAll(remoteMcps.definitions(boundMcpTools));
+		if (!boundWorkflows.isEmpty()) {
+			tools.addAll(workflows.definitions());
+		}
 		String skillCatalog = skills.catalogPrompt(skillIds);
 		String knowledge = TraceTexts.knowledge(retrieval);
 		trace.beginRound();
@@ -266,7 +280,15 @@ public class AgentChatService {
 			messages.add(assistantToolMessage(result));
 			for (ChatRound.ToolCall call : result.toolCalls()) {
 				long toolMark = trace.mark();
-				String output = executeTool(skillIds, boundHttpTools, boundMcpTools, call.name(), call.arguments());
+				String output = executeTool(
+						agent.getId(),
+						userText,
+						skillIds,
+						boundHttpTools,
+						boundMcpTools,
+						boundWorkflows,
+						call.name(),
+						call.arguments());
 				trace.tool(
 						call.name(),
 						toolKind(call.name(), boundHttpTools, boundMcpTools),
@@ -309,11 +331,23 @@ public class AgentChatService {
 	}
 
 	private String executeTool(
+			String agentId,
+			String userText,
 			List<String> allowedSkillIds,
 			List<HttpToolEntity> boundHttpTools,
 			List<BoundMcpTool> boundMcpTools,
+			List<WorkflowEntity> boundWorkflows,
 			String name,
 			String arguments) {
+		if ("run_workflow".equals(name)) {
+			String workflowId = ToolArguments.string(arguments, "workflow_id");
+			boolean allowed = boundWorkflows.stream().anyMatch((workflow) -> workflow.getId().equals(workflowId));
+			if (!allowed) {
+				return "ERROR: workflow is not bound to this agent";
+			}
+			String input = ToolArguments.string(arguments, "input");
+			return workflows.invokeAsTool(agentId, workflowId, input.isBlank() ? userText : input);
+		}
 		if ("load_skill".equals(name) || "read_skill_resource".equals(name) || "run_skill_script".equals(name)) {
 			String skillId = ToolArguments.string(arguments, "skill_id");
 			if (skillId.isBlank() || !allowedSkillIds.contains(skillId)) {
@@ -386,6 +420,7 @@ public class AgentChatService {
 				case "load_skill" -> "正在加载技能 " + ToolArguments.string(call.arguments(), "skill_id");
 				case "read_skill_resource" -> "正在读取 " + ToolArguments.string(call.arguments(), "path");
 				case "run_skill_script" -> "正在执行脚本 " + ToolArguments.string(call.arguments(), "script");
+				case "run_workflow" -> "正在运行工作流";
 				default -> "正在调用 " + call.name();
 			});
 		}
@@ -435,6 +470,7 @@ public class AgentChatService {
 			List<String> skillIds,
 			List<HttpToolEntity> boundHttpTools,
 			List<BoundMcpTool> boundMcpTools,
+			List<WorkflowEntity> boundWorkflows,
 			Retrieval retrieval) {
 		StringBuilder system = new StringBuilder();
 		if (agent.getSystemPrompt() != null && !agent.getSystemPrompt().isBlank()) {
@@ -471,6 +507,13 @@ public class AgentChatService {
 				}
 			}
 		}
+		String workflowCatalog = workflows.catalogPrompt(boundWorkflows);
+		if (!workflowCatalog.isBlank()) {
+			if (system.length() > 0) {
+				system.append("\n\n");
+			}
+			system.append(workflowCatalog);
+		}
 		KnowledgePrompt.append(system, retrieval);
 		return system.toString();
 	}
@@ -487,6 +530,9 @@ public class AgentChatService {
 			String name,
 			List<HttpToolEntity> boundHttpTools,
 			List<BoundMcpTool> boundMcpTools) {
+		if ("run_workflow".equals(name)) {
+			return "workflow";
+		}
 		if ("load_skill".equals(name) || "read_skill_resource".equals(name) || "run_skill_script".equals(name)) {
 			return "skill";
 		}

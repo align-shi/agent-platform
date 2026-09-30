@@ -77,6 +77,42 @@ public class SkillService {
 		return writeMarkdown(normalizeId(id), request);
 	}
 
+	@Transactional(readOnly = true)
+	public byte[] exportZip(String id, Integer version) {
+		String skillId = normalizeId(id);
+		int storedVersion = resolveVersion(id, version);
+		List<SkillZip.Entry> entries = files.findBySkillIdAndVersionOrderByPathAsc(skillId, storedVersion).stream()
+				.map(row -> new SkillZip.Entry(row.getPath(), row.isDirectory(), row.getContent()))
+				.toList();
+		return SkillZip.write(skillId, entries);
+	}
+
+	@Transactional
+	public ImportResult importZip(String filename, byte[] bytes) {
+		SkillZip.Archive archive = SkillZip.read(bytes, filename);
+		boolean created = !files.existsBySkillIdAndVersionAndPath(archive.id(), WORKING, SKILL_FILE);
+		if (!created) {
+			files.deleteBySkillIdAndVersion(archive.id(), WORKING);
+			files.flush();
+		}
+		for (SkillZip.Entry entry : archive.entries()) {
+			if (entry.directory()) {
+				ensureDirectory(archive.id(), WORKING, entry.path());
+			}
+		}
+		List<SkillFileEntity> rows = new ArrayList<>();
+		for (SkillZip.Entry entry : archive.entries()) {
+			if (entry.directory()) {
+				continue;
+			}
+			ensureParents(archive.id(), WORKING, entry.path());
+			rows.add(newRow(archive.id(), WORKING, entry.path(), false, entry.content()));
+		}
+		files.saveAll(rows);
+		SkillView skill = require(archive.id());
+		return new ImportResult(skill.id(), skill.name(), created);
+	}
+
 	@Transactional
 	public void delete(String id) {
 		String skillId = normalizeId(id);
@@ -636,6 +672,9 @@ public class SkillService {
 
 	private static boolean matchesTree(String path, String root) {
 		return path.equals(root) || path.startsWith(root + "/");
+	}
+
+	public record ImportResult(String id, String name, boolean created) {
 	}
 
 	static String normalizeId(String id) {

@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,6 +21,7 @@ import com.agentplatform.hub.provider.ProviderType;
 import com.agentplatform.hub.skill.AgentSkillEntity;
 import com.agentplatform.hub.skill.AgentSkillRepository;
 import com.agentplatform.hub.skill.SkillService;
+import com.agentplatform.hub.workflow.WorkflowService;
 
 @Service
 public class AgentService {
@@ -34,6 +36,7 @@ public class AgentService {
 	private final HttpToolService httpTools;
 	private final RemoteMcpService remoteMcps;
 	private final KnowledgeService knowledge;
+	private final WorkflowService workflows;
 
 	public AgentService(
 			AgentRepository repository,
@@ -43,7 +46,8 @@ public class AgentService {
 			SkillService skills,
 			HttpToolService httpTools,
 			RemoteMcpService remoteMcps,
-			KnowledgeService knowledge) {
+			KnowledgeService knowledge,
+			@Lazy WorkflowService workflows) {
 		this.repository = repository;
 		this.providers = providers;
 		this.conversations = conversations;
@@ -52,6 +56,7 @@ public class AgentService {
 		this.httpTools = httpTools;
 		this.remoteMcps = remoteMcps;
 		this.knowledge = knowledge;
+		this.workflows = workflows;
 	}
 
 	@Transactional(readOnly = true)
@@ -97,6 +102,11 @@ public class AgentService {
 		return knowledge.idsForAgent(agentId);
 	}
 
+	@Transactional(readOnly = true)
+	public List<String> workflowIds(String agentId) {
+		return workflows.idsForAgent(agentId);
+	}
+
 	@Transactional
 	public AgentDtos.View create(AgentDtos.UpsertRequest request) {
 		AgentEntity entity = new AgentEntity();
@@ -107,6 +117,7 @@ public class AgentService {
 		httpTools.replaceBindings(saved.getId(), request.httpToolIds());
 		remoteMcps.replaceBindings(saved.getId(), request.mcpServerIds());
 		knowledge.replaceBindings(saved.getId(), request.knowledgeBaseIds());
+		workflows.replaceBindings(saved.getId(), request.workflowIds());
 		return toView(saved);
 	}
 
@@ -119,6 +130,7 @@ public class AgentService {
 		httpTools.replaceBindings(saved.getId(), request.httpToolIds());
 		remoteMcps.replaceBindings(saved.getId(), request.mcpServerIds());
 		knowledge.replaceBindings(saved.getId(), request.knowledgeBaseIds());
+		workflows.replaceBindings(saved.getId(), request.workflowIds());
 		return toView(saved);
 	}
 
@@ -131,6 +143,7 @@ public class AgentService {
 		httpTools.deleteBindingsForAgent(id);
 		remoteMcps.deleteBindingsForAgent(id);
 		knowledge.deleteBindingsForAgent(id);
+		workflows.deleteBindingsForAgent(id);
 		conversations.deleteByAgentId(id);
 		repository.deleteById(id);
 	}
@@ -207,6 +220,7 @@ public class AgentService {
 				httpToolIds(entity.getId()),
 				mcpServerIds(entity.getId()),
 				knowledgeBaseIds(entity.getId()),
+				workflowIds(entity.getId()),
 				entity.resolvedMemoryMode().name(),
 				entity.getSummarizeWhenTokens() == null ? 8000 : entity.getSummarizeWhenTokens(),
 				entity.getKeepLastMessages() == null ? 10 : entity.getKeepLastMessages(),

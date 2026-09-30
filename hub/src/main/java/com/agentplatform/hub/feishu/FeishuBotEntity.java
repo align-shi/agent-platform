@@ -29,23 +29,11 @@ public class FeishuBotEntity {
 	@Column(name = "secret_last4", length = 8)
 	private String secretLast4;
 
-	@Column(name = "verification_token_cipher", nullable = false, length = 2048)
-	private String verificationTokenCipher;
-
-	@Column(name = "token_last4", length = 8)
-	private String tokenLast4;
-
-	@Column(name = "encrypt_key_cipher", length = 2048)
-	private String encryptKeyCipher;
-
 	@Column(name = "agent_id", nullable = false, length = 36)
 	private String agentId;
 
 	@Column(nullable = false)
 	private boolean enabled;
-
-	@Column(name = "public_base_url", length = 300)
-	private String publicBaseUrl;
 
 	@Column(name = "last_error", columnDefinition = "TEXT")
 	private String lastError;
@@ -111,30 +99,6 @@ public class FeishuBotEntity {
 		this.secretLast4 = secretLast4;
 	}
 
-	public String getVerificationTokenCipher() {
-		return verificationTokenCipher;
-	}
-
-	public void setVerificationTokenCipher(String verificationTokenCipher) {
-		this.verificationTokenCipher = verificationTokenCipher;
-	}
-
-	public String getTokenLast4() {
-		return tokenLast4;
-	}
-
-	public void setTokenLast4(String tokenLast4) {
-		this.tokenLast4 = tokenLast4;
-	}
-
-	public String getEncryptKeyCipher() {
-		return encryptKeyCipher;
-	}
-
-	public void setEncryptKeyCipher(String encryptKeyCipher) {
-		this.encryptKeyCipher = encryptKeyCipher;
-	}
-
 	public String getAgentId() {
 		return agentId;
 	}
@@ -149,14 +113,6 @@ public class FeishuBotEntity {
 
 	public void setEnabled(boolean enabled) {
 		this.enabled = enabled;
-	}
-
-	public String getPublicBaseUrl() {
-		return publicBaseUrl;
-	}
-
-	public void setPublicBaseUrl(String publicBaseUrl) {
-		this.publicBaseUrl = publicBaseUrl;
 	}
 
 	public String getLastError() {

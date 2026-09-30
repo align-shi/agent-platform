@@ -30,16 +30,18 @@ import {
   type Provider,
   type RemoteMcp,
   type Skill,
+  type Workflow,
 } from './api'
 import { AgentCallsPanel } from './CallsPage'
 import { AgentChatPanel, type AgentChatHandle } from './ChatPage'
 
-type AgentSection = 'llm' | 'memory' | 'connectors' | 'knowledge' | 'skills' | 'prompt' | 'other'
+type AgentSection = 'llm' | 'memory' | 'connectors' | 'workflows' | 'knowledge' | 'skills' | 'prompt' | 'other'
 
 const AGENT_SECTIONS: { id: AgentSection; label: string }[] = [
   { id: 'llm', label: 'LLM 模型' },
   { id: 'memory', label: '记忆' },
   { id: 'connectors', label: '连接器' },
+  { id: 'workflows', label: '工作流' },
   { id: 'knowledge', label: '知识库' },
   { id: 'skills', label: '技能' },
   { id: 'prompt', label: '系统提示词' },
@@ -140,6 +142,7 @@ export function AgentsPage({
   httpTools,
   remoteMcps,
   knowledgeBases,
+  workflows,
   onChanged,
   onError,
 }: {
@@ -149,6 +152,7 @@ export function AgentsPage({
   httpTools: HttpConnector[]
   remoteMcps: RemoteMcp[]
   knowledgeBases: KnowledgeBase[]
+  workflows: Workflow[]
   onChanged: () => Promise<void>
   onError: (message: string) => void
 }) {
@@ -164,6 +168,7 @@ export function AgentsPage({
   const [httpToolIds, setHttpToolIds] = useState<string[]>([])
   const [mcpServerIds, setMcpServerIds] = useState<string[]>([])
   const [knowledgeBaseIds, setKnowledgeBaseIds] = useState<string[]>([])
+  const [workflowIds, setWorkflowIds] = useState<string[]>([])
   const [memoryMode, setMemoryMode] = useState<MemoryMode>('SESSION')
   const [summarizeWhenTokens, setSummarizeWhenTokens] = useState(8000)
   const [keepLastMessages, setKeepLastMessages] = useState(10)
@@ -189,6 +194,7 @@ export function AgentsPage({
     setHttpToolIds(agent.httpToolIds ?? [])
     setMcpServerIds(agent.mcpServerIds ?? [])
     setKnowledgeBaseIds(agent.knowledgeBaseIds ?? [])
+    setWorkflowIds(agent.workflowIds ?? [])
     setMemoryMode(agent.memoryMode ?? 'SESSION')
     setSummarizeWhenTokens(agent.summarizeWhenTokens ?? 8000)
     setKeepLastMessages(agent.keepLastMessages ?? 10)
@@ -203,6 +209,7 @@ export function AgentsPage({
     setHttpToolIds([])
     setMcpServerIds([])
     setKnowledgeBaseIds([])
+    setWorkflowIds([])
     setMemoryMode('SESSION')
     setSummarizeWhenTokens(8000)
     setKeepLastMessages(10)
@@ -257,6 +264,7 @@ export function AgentsPage({
         httpToolIds,
         mcpServerIds,
         knowledgeBaseIds,
+        workflowIds,
         memoryMode,
         summarizeWhenTokens,
         keepLastMessages,
@@ -319,6 +327,7 @@ export function AgentsPage({
                         ? `${(item.httpToolIds?.length || 0) + (item.mcpServerIds?.length || 0)} 个连接器`
                         : '未绑连接器'}
                     </Tag>
+                    <Tag>{item.workflowIds?.length ? `${item.workflowIds.length} 个工作流` : '未绑工作流'}</Tag>
                   </Space>
                 </Space>
               </Card>
@@ -514,6 +523,34 @@ export function AgentsPage({
                           {' '}
                           {item.tools?.length ? `${item.tools.length} 个工具` : '尚未发现工具'}
                           {item.url ? ` · ${item.url}` : ''}
+                        </Typography.Text>
+                      </Checkbox>
+                    ))}
+                  </Space>
+                </Checkbox.Group>
+              )}
+            </>
+          ) : null}
+          {section === 'workflows' ? (
+            <>
+              <Typography.Paragraph type="secondary">
+                勾选后，对话和飞书里可以用 run_workflow 按工作流的固定步骤执行。工作流本身在侧栏「工作流」里编辑。
+              </Typography.Paragraph>
+              {workflows.length === 0 ? (
+                <Empty description="还没有工作流，先到侧栏「工作流」画一条路径。" />
+              ) : (
+                <Checkbox.Group value={workflowIds} onChange={(values) => setWorkflowIds(values as string[])}>
+                  <Space vertical>
+                    {workflows.map((item) => (
+                      <Checkbox key={item.id} value={item.id}>
+                        {item.name}
+                        {item.enabled ? '' : '（停用）'}
+                        <Typography.Text type="secondary">
+                          {item.lastStatus === 'succeeded'
+                            ? ' · 上次成功'
+                            : item.lastStatus === 'failed'
+                              ? ' · 上次失败'
+                              : ' · 还没运行过'}
                         </Typography.Text>
                       </Checkbox>
                     ))}

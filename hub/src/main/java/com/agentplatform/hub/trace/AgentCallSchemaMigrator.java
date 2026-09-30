@@ -1,5 +1,7 @@
 package com.agentplatform.hub.trace;
 
+import java.util.List;
+
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
@@ -18,15 +20,16 @@ public class AgentCallSchemaMigrator implements ApplicationRunner {
 
 	@Override
 	public void run(ApplicationArguments args) {
-		String type = jdbc.queryForObject(
+		List<String> types = jdbc.query(
 				"""
 				select data_type
 				from information_schema.columns
 				where table_schema = database()
-				  and table_name = 'agent_calls'
-				  and column_name = 'trace_json'
+				  and lower(table_name) = 'agent_calls'
+				  and lower(column_name) = 'trace_json'
 				""",
-				String.class);
+				(rs, row) -> rs.getString(1));
+		String type = types.isEmpty() ? null : types.get(0);
 		if (type != null && !"longtext".equalsIgnoreCase(type)) {
 			jdbc.execute("alter table agent_calls modify column trace_json longtext not null");
 		}

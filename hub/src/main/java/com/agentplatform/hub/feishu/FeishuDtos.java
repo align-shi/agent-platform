@@ -8,15 +8,13 @@ public final class FeishuDtos {
 	}
 
 	public record UpsertRequest(
-			String name,
 			String appId,
 			String appSecret,
-			String verificationToken,
-			String encryptKey,
-			boolean encryptEnabled,
 			String agentId,
-			boolean enabled,
-			String publicBaseUrl) {
+			boolean enabled) {
+	}
+
+	public record LookupRequest(String id, String appId, String appSecret) {
 	}
 
 	public record View(
@@ -25,15 +23,11 @@ public final class FeishuDtos {
 			String appId,
 			String secretLast4,
 			boolean secretConfigured,
-			String tokenLast4,
-			boolean tokenConfigured,
-			boolean encryptConfigured,
 			String agentId,
 			String agentName,
 			boolean enabled,
-			String publicBaseUrl,
-			String callbackPath,
-			String callbackUrl,
+			String linkStatus,
+			String linkDetail,
 			String lastError,
 			Instant lastEventAt) {
 	}

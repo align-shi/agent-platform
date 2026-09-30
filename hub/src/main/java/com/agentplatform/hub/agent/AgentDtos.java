@@ -19,6 +19,7 @@ public final class AgentDtos {
 			List<String> httpToolIds,
 			List<String> mcpServerIds,
 			List<String> knowledgeBaseIds,
+			List<String> workflowIds,
 			String memoryMode,
 			Integer summarizeWhenTokens,
 			Integer keepLastMessages) {
@@ -36,6 +37,7 @@ public final class AgentDtos {
 			List<String> httpToolIds,
 			List<String> mcpServerIds,
 			List<String> knowledgeBaseIds,
+			List<String> workflowIds,
 			String memoryMode,
 			Integer summarizeWhenTokens,
 			Integer keepLastMessages,

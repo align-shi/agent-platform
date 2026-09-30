@@ -45,10 +45,41 @@ public class FeishuClient {
 		tenantToken(appId, appSecret, true);
 	}
 
+	public String botName(String appId, String appSecret) {
+		String token = tenantToken(appId, appSecret, false);
+		Map<String, Object> response = get(URI.create(OPEN_BASE + "/open-apis/bot/v3/info"), token, "获取飞书机器人名称失败");
+		ensureOk(response, "获取飞书机器人名称失败");
+		Object bot = response.get("bot");
+		if (bot instanceof Map<?, ?> map && map.get("app_name") instanceof String name && !name.isBlank()) {
+			return name.trim();
+		}
+		throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "飞书没有返回机器人名称");
+	}
+
+	public String addReaction(String appId, String appSecret, String messageId, String emojiType) {
+		String token = tenantToken(appId, appSecret, false);
+		URI uri = messageUri(messageId, "/reactions");
+		Map<String, Object> payload = Map.of("reaction_type", Map.of("emoji_type", emojiType));
+		Map<String, Object> response = post(uri, token, payload, "飞书表情回复失败");
+		ensureOk(response, "飞书表情回复失败");
+		Object data = response.get("data");
+		if (data instanceof Map<?, ?> map && map.get("reaction_id") instanceof String id && !id.isBlank()) {
+			return id;
+		}
+		return null;
+	}
+
+	public void deleteReaction(String appId, String appSecret, String messageId, String reactionId) {
+		String token = tenantToken(appId, appSecret, false);
+		String reactionPath = UriUtils.encodePathSegment(reactionId, StandardCharsets.UTF_8);
+		URI uri = messageUri(messageId, "/reactions/" + reactionPath);
+		Map<String, Object> response = delete(uri, token, "飞书表情撤回失败");
+		ensureOk(response, "飞书表情撤回失败");
+	}
+
 	public void replyText(String appId, String appSecret, String messageId, String text, String eventId) {
 		String token = tenantToken(appId, appSecret, false);
-		String messagePath = UriUtils.encodePathSegment(messageId, StandardCharsets.UTF_8);
-		URI uri = URI.create(OPEN_BASE + "/open-apis/im/v1/messages/" + messagePath + "/reply");
+		URI uri = messageUri(messageId, "/reply");
 		List<String> parts = FeishuTexts.chunks(text, 3500);
 		for (int i = 0; i < parts.size(); i++) {
 			Map<String, Object> payload = new LinkedHashMap<>();
@@ -89,6 +120,28 @@ public class FeishuClient {
 		return value;
 	}
 
+	private URI messageUri(String messageId, String suffix) {
+		String messagePath = UriUtils.encodePathSegment(messageId, StandardCharsets.UTF_8);
+		return URI.create(OPEN_BASE + "/open-apis/im/v1/messages/" + messagePath + suffix);
+	}
+
+	private Map<String, Object> get(URI url, String bearer, String action) {
+		try {
+			return restClient.get()
+					.uri(url)
+					.header("Authorization", "Bearer " + bearer)
+					.retrieve()
+					.body(new org.springframework.core.ParameterizedTypeReference<>() {
+					});
+		}
+		catch (RestClientResponseException ex) {
+			throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, action + "：" + abbreviate(ex.getResponseBodyAsString()));
+		}
+		catch (RestClientException ex) {
+			throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, action + "：" + abbreviate(ex.getMessage()));
+		}
+	}
+
 	private Map<String, Object> post(URI url, String bearer, Map<String, Object> body, String action) {
 		try {
 			RestClient.RequestBodySpec spec = restClient.post().uri(url).contentType(MediaType.APPLICATION_JSON);
@@ -97,6 +150,23 @@ public class FeishuClient {
 			}
 			return spec.body(body).retrieve().body(new org.springframework.core.ParameterizedTypeReference<>() {
 			});
+		}
+		catch (RestClientResponseException ex) {
+			throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, action + "：" + abbreviate(ex.getResponseBodyAsString()));
+		}
+		catch (RestClientException ex) {
+			throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, action + "：" + abbreviate(ex.getMessage()));
+		}
+	}
+
+	private Map<String, Object> delete(URI url, String bearer, String action) {
+		try {
+			return restClient.delete()
+					.uri(url)
+					.header("Authorization", "Bearer " + bearer)
+					.retrieve()
+					.body(new org.springframework.core.ParameterizedTypeReference<>() {
+					});
 		}
 		catch (RestClientResponseException ex) {
 			throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, action + "：" + abbreviate(ex.getResponseBodyAsString()));

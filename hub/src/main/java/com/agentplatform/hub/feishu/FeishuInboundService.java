@@ -1,9 +1,5 @@
 package com.agentplatform.hub.feishu;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.time.Instant;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -21,10 +17,6 @@ import com.agentplatform.hub.chat.AgentChatService;
 import com.agentplatform.hub.chat.ChatDtos;
 import com.agentplatform.hub.conversation.ConversationService;
 import com.agentplatform.hub.feishu.FeishuBotService.Secrets;
-import tools.jackson.core.JacksonException;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
-
 import jakarta.annotation.PreDestroy;
 
 @Service
@@ -37,7 +29,6 @@ public class FeishuInboundService {
 	private final AgentChatService agentChat;
 	private final ConversationService conversations;
 	private final FeishuClient client;
-	private final JsonMapper mapper;
 	private final ExecutorService executor = Executors.newFixedThreadPool(4, (runnable) -> {
 		Thread thread = new Thread(runnable, "feishu-inbound");
 		thread.setDaemon(true);
@@ -50,14 +41,12 @@ public class FeishuInboundService {
 			AgentService agents,
 			AgentChatService agentChat,
 			ConversationService conversations,
-			FeishuClient client,
-			JsonMapper mapper) {
+			FeishuClient client) {
 		this.bots = bots;
 		this.agents = agents;
 		this.agentChat = agentChat;
 		this.conversations = conversations;
 		this.client = client;
-		this.mapper = mapper;
 	}
 
 	@PreDestroy
@@ -65,31 +54,26 @@ public class FeishuInboundService {
 		executor.shutdownNow();
 	}
 
-	public Map<String, Object> accept(
-			String botId,
-			String rawBody,
-			String timestamp,
-			String nonce,
-			String signature) {
-		if (rawBody == null || rawBody.isBlank()) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "飞书请求体为空");
-		}
-		Secrets secrets = bots.secrets(botId);
-		JsonNode root = unwrap(rawBody, secrets.encryptKey(), timestamp, nonce, signature);
+	public void onEvent(String botId, String rawJson) {
 		FeishuPayload payload;
 		try {
-			payload = FeishuEventParser.parse(root);
+			payload = FeishuEventParser.parse(rawJson);
 		}
-		catch (IllegalArgumentException ex) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, ex.getMessage());
+		catch (RuntimeException ex) {
+			log.warn("feishu event ignored bot={} reason={}", botId, ex.getMessage());
+			return;
 		}
-		checkToken(secrets.verificationToken(), payload.token());
-		if (payload instanceof FeishuPayload.Challenge challenge) {
-			log.info("feishu url verified bot={}", botId);
-			return Map.of("challenge", challenge.challenge());
+		if (!(payload instanceof FeishuPayload.TextMessage) && !(payload instanceof FeishuPayload.Notice)) {
+			return;
 		}
-		if (!secrets.enabled()) {
-			return Map.of();
+		try {
+			if (!bots.secrets(botId).enabled()) {
+				return;
+			}
+		}
+		catch (ResponseStatusException ex) {
+			log.warn("feishu event for missing bot={}", botId);
+			return;
 		}
 		if (payload instanceof FeishuPayload.TextMessage text) {
 			schedule(botId, text.eventId(), text.chatId(), () -> deliverText(botId, text));
@@ -97,7 +81,6 @@ public class FeishuInboundService {
 		else if (payload instanceof FeishuPayload.Notice notice) {
 			schedule(botId, notice.eventId(), notice.chatId(), () -> deliverNotice(botId, notice));
 		}
-		return Map.of();
 	}
 
 	private void schedule(String botId, String eventId, String chatId, Runnable task) {
@@ -118,11 +101,14 @@ public class FeishuInboundService {
 	}
 
 	private void deliverText(String botId, FeishuPayload.TextMessage message) {
+		Secrets secrets = null;
+		String reactionId = null;
 		try {
-			Secrets secrets = bots.secrets(botId);
+			secrets = bots.secrets(botId);
 			if (!secrets.enabled()) {
 				return;
 			}
+			reactionId = beginTyping(secrets, message.messageId());
 			if (message.text() == null || message.text().isBlank()) {
 				reply(secrets, message.messageId(), "请直接发送要问的内容。", message.eventId());
 				bots.markResult(botId, null);
@@ -154,11 +140,18 @@ public class FeishuInboundService {
 		catch (Exception ex) {
 			log.warn("feishu agent failed bot={} message={}", botId, message.messageId(), ex);
 			try {
-				Secrets secrets = bots.secrets(botId);
+				if (secrets == null) {
+					secrets = bots.secrets(botId);
+				}
 				fail(botId, secrets, message.messageId(), message.eventId(), userFacing(ex));
 			}
 			catch (RuntimeException nested) {
 				bots.markResult(botId, userFacing(ex));
+			}
+		}
+		finally {
+			if (secrets != null) {
+				endTyping(secrets, message.messageId(), reactionId);
 			}
 		}
 	}
@@ -212,49 +205,25 @@ public class FeishuInboundService {
 		client.replyText(secrets.appId(), secrets.appSecret(), messageId, text, eventId);
 	}
 
-	private JsonNode unwrap(String rawBody, String encryptKey, String timestamp, String nonce, String signature) {
-		JsonNode root = read(rawBody);
-		boolean encrypted = root.hasNonNull("encrypt") && !root.get("encrypt").asText().isBlank();
-		boolean signed = signature != null && !signature.isBlank();
-		if (encrypted || signed) {
-			if (encryptKey == null || encryptKey.isBlank()) {
-				throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "收到加密事件，但没有配置 Encrypt Key");
-			}
-			try {
-				FeishuCrypto.checkSignature(timestamp, nonce, signature, encryptKey, rawBody, Instant.now().getEpochSecond());
-			}
-			catch (FeishuCrypto.SignatureException ex) {
-				throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, ex.getMessage());
-			}
-		}
-		if (!encrypted) {
-			return root;
-		}
+	private String beginTyping(Secrets secrets, String messageId) {
 		try {
-			return read(FeishuCrypto.decrypt(encryptKey, root.get("encrypt").asText()));
+			return client.addReaction(secrets.appId(), secrets.appSecret(), messageId, "Typing");
 		}
-		catch (IllegalArgumentException ex) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, ex.getMessage());
+		catch (RuntimeException ex) {
+			log.warn("feishu typing reaction failed message={} reason={}", messageId, userFacing(ex));
+			return null;
 		}
 	}
 
-	private JsonNode read(String raw) {
+	private void endTyping(Secrets secrets, String messageId, String reactionId) {
+		if (reactionId == null || reactionId.isBlank()) {
+			return;
+		}
 		try {
-			return mapper.readTree(raw);
+			client.deleteReaction(secrets.appId(), secrets.appSecret(), messageId, reactionId);
 		}
-		catch (JacksonException ex) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "飞书请求不是合法 JSON");
-		}
-	}
-
-	private static void checkToken(String expected, String actual) {
-		if (expected == null || expected.isBlank()) {
-			throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "还没有配置 Verification Token");
-		}
-		byte[] expectedBytes = expected.getBytes(StandardCharsets.UTF_8);
-		byte[] actualBytes = (actual == null ? "" : actual).getBytes(StandardCharsets.UTF_8);
-		if (!MessageDigest.isEqual(expectedBytes, actualBytes)) {
-			throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Verification Token 不匹配");
+		catch (RuntimeException ex) {
+			log.warn("feishu typing reaction clear failed message={} reason={}", messageId, userFacing(ex));
 		}
 	}
 

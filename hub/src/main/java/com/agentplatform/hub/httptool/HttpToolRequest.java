@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
 record HttpToolRequest(String method, URI uri, Map<String, String> headers, String body) {
 
 	private static final Pattern PATH_TOKEN = Pattern.compile("\\{([a-zA-Z][a-zA-Z0-9_]*)\\}");
-	private static final List<String> RESERVED = List.of("load_skill", "read_skill_resource", "run_skill_script");
+	private static final List<String> RESERVED = List.of("load_skill", "read_skill_resource", "run_skill_script", "run_workflow");
 
 	static String normalizeToolName(String raw) {
 		if (raw == null) {

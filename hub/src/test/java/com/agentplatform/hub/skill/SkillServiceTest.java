@@ -110,4 +110,28 @@ class SkillServiceTest {
 				skills.readFile("customer-reply", "SKILL.md", 1).content()).body());
 	}
 
+	@Test
+	void exportsZipAndImportsOverExistingSkill() {
+		skills.create(new SkillView("customer-reply", "客服回复", "投诉时使用", "原文"));
+		skills.writeFile("customer-reply", "references/input.md", "入参");
+		skills.publishVersion("customer-reply");
+		byte[] zip = skills.exportZip("customer-reply", null);
+
+		byte[] fresh = SkillZip.write("order-check", List.of(
+				new SkillZip.Entry("SKILL.md", false, SkillMarkdown.write(
+						new SkillView("order-check", "查单", "查询订单", "按单号查"))),
+				new SkillZip.Entry("references/input.md", false, "单号")));
+		SkillService.ImportResult created = skills.importZip("order-check.zip", fresh);
+		assertTrue(created.created());
+		assertEquals("order-check", created.id());
+		assertEquals("单号", skills.readFile("order-check", "references/input.md").content());
+
+		skills.update("customer-reply", new SkillView("customer-reply", "客服回复", "投诉时使用", "已改"));
+		SkillService.ImportResult overwritten = skills.importZip("customer-reply.zip", zip);
+		assertFalse(overwritten.created());
+		assertEquals("原文", skills.require("customer-reply").body());
+		assertEquals("入参", skills.readFile("customer-reply", "references/input.md").content());
+		assertEquals(1, skills.require("customer-reply").latestVersion());
+	}
+
 }

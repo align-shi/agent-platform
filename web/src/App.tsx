@@ -10,17 +10,18 @@ import {
   RobotOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
-import { listAgents, listHttpTools, listKnowledgeBases, listProviders, listRemoteMcps, listSkills, type Agent, type HttpConnector, type KnowledgeBase, type Provider, type RemoteMcp, type Skill } from './api'
+import { listAgents, listHttpTools, listKnowledgeBases, listProviders, listRemoteMcps, listSkills, listWorkflows, type Agent, type HttpConnector, type KnowledgeBase, type Provider, type RemoteMcp, type Skill, type Workflow } from './api'
 import { AgentsPage } from './AgentsPage'
 import { ConnectorsPage } from './ConnectorsPage'
 import { FeishuPage } from './FeishuPage'
+import { WorkflowsPage } from './WorkflowsPage'
 import { KnowledgePage } from './KnowledgePage'
 import { ProvidersPage } from './ProvidersPage'
 import { SkillsPage } from './SkillsPage'
 
-type NavId = 'providers' | 'agents' | 'skills' | 'connectors' | 'knowledge' | 'feishu'
+type NavId = 'providers' | 'agents' | 'skills' | 'connectors' | 'knowledge' | 'feishu' | 'workflows'
 
-const NAV_IDS: NavId[] = ['agents', 'skills', 'connectors', 'knowledge', 'feishu', 'providers']
+const NAV_IDS: NavId[] = ['agents', 'skills', 'connectors', 'knowledge', 'workflows', 'feishu', 'providers']
 
 function pageFromHash(): NavId {
   const raw = window.location.hash.replace(/^#\/?/, '')
@@ -32,10 +33,9 @@ const NAV_ITEMS: MenuProps['items'] = [
   { key: 'skills', icon: <ThunderboltOutlined />, label: '技能 Skill' },
   { key: 'connectors', icon: <ApiOutlined />, label: '连接器 MCP' },
   { key: 'knowledge', icon: <DatabaseOutlined />, label: '知识库 Knowledge' },
+  { key: 'workflows', icon: <ApartmentOutlined />, label: '工作流 Workflow' },
   { key: 'feishu', icon: <MessageOutlined />, label: '飞书 Feishu' },
   { key: 'providers', icon: <CloudOutlined />, label: '模型提供商 Providers' },
-  { type: 'divider' },
-  { key: 'later-wf', icon: <ApartmentOutlined />, label: '工作流 Workflow', disabled: true },
 ]
 
 export default function App() {
@@ -46,6 +46,7 @@ export default function App() {
   const [httpTools, setHttpTools] = useState<HttpConnector[]>([])
   const [remoteMcps, setRemoteMcps] = useState<RemoteMcp[]>([])
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
+  const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [error, setError] = useState('')
 
   function goTo(next: NavId) {
@@ -59,13 +60,14 @@ export default function App() {
   async function refresh() {
     try {
       setError('')
-      const [nextProviders, nextAgents, nextSkills, nextHttpTools, nextRemoteMcps, nextKnowledge] = await Promise.all([
+      const [nextProviders, nextAgents, nextSkills, nextHttpTools, nextRemoteMcps, nextKnowledge, nextWorkflows] = await Promise.all([
         listProviders(),
         listAgents(),
         listSkills(),
         listHttpTools(),
         listRemoteMcps(),
         listKnowledgeBases(),
+        listWorkflows(),
       ])
       setProviders(nextProviders)
       setAgents(nextAgents)
@@ -73,6 +75,7 @@ export default function App() {
       setHttpTools(nextHttpTools)
       setRemoteMcps(nextRemoteMcps)
       setKnowledgeBases(nextKnowledge)
+      setWorkflows(nextWorkflows)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -128,6 +131,7 @@ export default function App() {
             httpTools={httpTools}
             remoteMcps={remoteMcps}
             knowledgeBases={knowledgeBases}
+            workflows={workflows}
             onChanged={refresh}
             onError={setError}
           />
@@ -141,6 +145,7 @@ export default function App() {
         {page === 'skills' ? (
           <SkillsPage skills={skills} onChanged={refresh} onError={setError} />
         ) : null}
+        {page === 'workflows' ? <WorkflowsPage agents={agents} providers={providers} httpTools={httpTools} onChanged={refresh} onError={setError} /> : null}
         {page === 'feishu' ? <FeishuPage agents={agents} onError={setError} /> : null}
       </Layout.Content>
     </Layout>

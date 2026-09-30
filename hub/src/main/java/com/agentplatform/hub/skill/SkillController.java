@@ -1,7 +1,12 @@
 package com.agentplatform.hub.skill;
 
+import java.io.IOException;
 import java.util.List;
 
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -11,6 +16,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.server.ResponseStatusException;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -40,6 +47,25 @@ public class SkillController {
 	@PostMapping("/generate")
 	public SkillGenerateService.Generated generate(@Valid @RequestBody GenerateRequest request) {
 		return generator.generate(request.brief(), request.skillId(), request.files());
+	}
+
+	@GetMapping("/{id}/archive")
+	public ResponseEntity<byte[]> archive(@PathVariable String id, @RequestParam(required = false) Integer version) {
+		String skillId = SkillService.normalizeId(id);
+		byte[] zip = skills.exportZip(skillId, version);
+		return ResponseEntity.ok()
+				.header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + skillId + ".zip\"")
+				.contentType(MediaType.parseMediaType("application/zip"))
+				.body(zip);
+	}
+
+	@PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+	public SkillService.ImportResult importZip(@RequestParam("file") MultipartFile file) throws IOException {
+		String name = file.getOriginalFilename();
+		if (name != null && !name.toLowerCase().endsWith(".zip")) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请上传 zip 文件");
+		}
+		return skills.importZip(name, file.getBytes());
 	}
 
 	@PostMapping

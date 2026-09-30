@@ -22,7 +22,7 @@ public class RemoteMcpService {
 
 	private static final Set<String> AUTHS = Set.of("NONE", "BEARER", "HEADER");
 	private static final Set<String> TRANSPORTS = Set.of("STREAMABLE", "SSE");
-	private static final Set<String> RESERVED = Set.of("load_skill", "read_skill_resource", "run_skill_script");
+	private static final Set<String> RESERVED = Set.of("load_skill", "read_skill_resource", "run_skill_script", "run_workflow");
 
 	private final RemoteMcpRepository servers;
 	private final AgentMcpRepository bindings;

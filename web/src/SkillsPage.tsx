@@ -3,7 +3,9 @@ import { Button, Card, Empty, Flex, Form, Input, Modal, Popconfirm, Radio, Space
 import {
   createSkill,
   createSkillDir,
+  downloadSkill,
   generateSkill,
+  importSkillZip,
   deleteSkill,
   deleteSkillFile,
   listSkillFiles,
@@ -51,6 +53,7 @@ export function SkillsPage({
   const [newKind, setNewKind] = useState<'file' | 'dir'>('file')
   const [newPath, setNewPath] = useState('')
   const uploadRef = useRef<HTMLInputElement>(null)
+  const importRef = useRef<HTMLInputElement>(null)
   const draftRef = useRef<Record<string, string>>({})
   const editingId = view !== 'list' && view !== 'create' ? view : null
   const creating = view === 'create'
@@ -503,6 +506,27 @@ export function SkillsPage({
     }
   }
 
+  async function onDownload() {
+    if (!editingId) {
+      return
+    }
+    try {
+      await downloadSkill(editingId, viewVersion)
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function onImport(file: File) {
+    try {
+      const result = await importSkillZip(file)
+      message.success(result.created ? `已新增技能 ${result.name}` : `已覆盖技能 ${result.name}`)
+      await onChanged()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   async function onPublish() {
     if (!editingId || readonly) {
       return
@@ -570,9 +594,23 @@ export function SkillsPage({
               onChange={(e) => setKeyword(e.target.value)}
               style={{ width: 280 }}
             />
+            <Button onClick={() => importRef.current?.click()}>导入</Button>
             <Button type="primary" onClick={openCreate}>
               新建技能
             </Button>
+            <input
+              ref={importRef}
+              type="file"
+              accept=".zip,application/zip"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                event.target.value = ''
+                if (file) {
+                  void onImport(file)
+                }
+              }}
+            />
           </Space>
         </Flex>
         <Table
@@ -631,6 +669,7 @@ export function SkillsPage({
                   <Button danger>删除</Button>
                 </Popconfirm>
               ) : null}
+              <Button onClick={() => void onDownload()}>下载</Button>
               <Button onClick={() => setVersionsOpen(true)}>版本历史</Button>
               <Button type="primary" disabled={readonly} onClick={() => void onPublish()}>
                 发布为 v{nextVersion}

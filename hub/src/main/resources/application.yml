@@ -8,6 +8,10 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       maximum-pool-size: 10
+  servlet:
+    multipart:
+      max-file-size: 8MB
+      max-request-size: 8MB
   jpa:
     open-in-view: false
     hibernate:
@@ -18,7 +22,7 @@ spring:
     show-sql: false
 
 server:
-  port: 8080
+  port: 8081
   error:
     include-message: always
 

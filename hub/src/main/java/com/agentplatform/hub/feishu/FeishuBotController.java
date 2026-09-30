@@ -32,6 +32,11 @@ public class FeishuBotController {
 		return service.create(request);
 	}
 
+	@PostMapping("/lookup")
+	public Map<String, String> lookup(@RequestBody FeishuDtos.LookupRequest request) {
+		return Map.of("name", service.lookupName(request));
+	}
+
 	@PutMapping("/{id}")
 	public FeishuDtos.View update(@PathVariable String id, @RequestBody FeishuDtos.UpsertRequest request) {
 		return service.update(id, request);

@@ -123,6 +123,7 @@ export type Agent = {
   httpToolIds: string[]
   mcpServerIds: string[]
   knowledgeBaseIds: string[]
+  workflowIds: string[]
   memoryMode: MemoryMode
   summarizeWhenTokens: number
   keepLastMessages: number
@@ -139,6 +140,7 @@ export type UpsertAgent = {
   httpToolIds: string[]
   mcpServerIds: string[]
   knowledgeBaseIds: string[]
+  workflowIds: string[]
   memoryMode: MemoryMode
   summarizeWhenTokens: number
   keepLastMessages: number
@@ -537,6 +539,31 @@ export async function tryRemoteMcp(id: string, secret?: string): Promise<string>
   return data.output
 }
 
+export async function downloadSkill(id: string, version?: number | null): Promise<void> {
+  const query = version ? `?version=${version}` : ''
+  const res = await fetch(`/api/skills/${id}/archive${query}`)
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${id}.zip`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+export async function importSkillZip(file: File): Promise<{ id: string; name: string; created: boolean }> {
+  const body = new FormData()
+  body.append('file', file)
+  const res = await fetch('/api/skills/import', { method: 'POST', body })
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  return res.json()
+}
+
 export async function listSkills(): Promise<Skill[]> {
   const res = await fetch('/api/skills')
   if (!res.ok) {
@@ -904,29 +931,20 @@ export type FeishuBot = {
   appId: string
   secretLast4: string
   secretConfigured: boolean
-  tokenLast4: string
-  tokenConfigured: boolean
-  encryptConfigured: boolean
   agentId: string
   agentName: string
   enabled: boolean
-  publicBaseUrl: string
-  callbackPath: string
-  callbackUrl: string | null
+  linkStatus: 'connected' | 'connecting' | 'reconnecting' | 'failed' | 'stopped'
+  linkDetail: string | null
   lastError: string | null
   lastEventAt: string | null
 }
 
 export type UpsertFeishuBot = {
-  name: string
   appId: string
   appSecret?: string
-  verificationToken?: string
-  encryptKey?: string
-  encryptEnabled: boolean
   agentId: string
   enabled: boolean
-  publicBaseUrl?: string
 }
 
 export async function listFeishuBots(): Promise<FeishuBot[]> {
@@ -968,9 +986,163 @@ export async function deleteFeishuBot(id: string): Promise<void> {
   }
 }
 
+export async function lookupFeishuBotName(body: {
+  id?: string
+  appId: string
+  appSecret?: string
+}): Promise<string> {
+  const res = await fetch('/api/feishu/bots/lookup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  const json = (await res.json()) as { name?: string }
+  return json.name ?? ''
+}
+
 export async function probeFeishuBot(id: string): Promise<void> {
   const res = await fetch(`/api/feishu/bots/${id}/probe`, { method: 'POST' })
   if (!res.ok) {
     await throwApiError(res)
   }
+}
+
+export type WorkflowNodeType = 'start' | 'end' | 'agent' | 'llm' | 'http' | 'condition'
+
+export type WorkflowNode = {
+  id: string
+  type: WorkflowNodeType
+  x: number
+  y: number
+  data: Record<string, string>
+}
+
+export type WorkflowEdge = {
+  id: string
+  source: string
+  target: string
+  branch?: string | null
+}
+
+export type WorkflowGraph = {
+  nodes: WorkflowNode[]
+  edges: WorkflowEdge[]
+}
+
+export type Workflow = {
+  id: string
+  name: string
+  enabled: boolean
+  graph: WorkflowGraph
+  lastStatus: string | null
+  lastError: string | null
+  lastRunAt: string | null
+  updatedAt: string | null
+}
+
+export type UpsertWorkflow = {
+  name: string
+  enabled: boolean
+  graph: WorkflowGraph
+}
+
+export type WorkflowStep = {
+  nodeId: string
+  nodeType: string
+  status: string
+  input: string | null
+  output: string | null
+  error: string | null
+}
+
+export type WorkflowRun = {
+  id: string
+  workflowId: string
+  status: string
+  input: string
+  output: string | null
+  error: string | null
+  steps: WorkflowStep[]
+  createdAt: string
+  finishedAt: string | null
+}
+
+export async function listWorkflows(): Promise<Workflow[]> {
+  const res = await fetch('/api/workflows')
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  return res.json()
+}
+
+export async function createWorkflow(body?: Partial<UpsertWorkflow>): Promise<Workflow> {
+  const res = await fetch('/api/workflows', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? { name: '未命名工作流', enabled: true }),
+  })
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  return res.json()
+}
+
+export async function updateWorkflow(id: string, body: UpsertWorkflow): Promise<Workflow> {
+  const res = await fetch(`/api/workflows/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  return res.json()
+}
+
+export async function deleteWorkflow(id: string): Promise<void> {
+  const res = await fetch(`/api/workflows/${id}`, { method: 'DELETE' })
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+}
+
+export type WorkflowRunSummary = {
+  id: string
+  status: string
+  input: string
+  output: string | null
+  error: string | null
+  createdAt: string
+  finishedAt: string | null
+}
+
+export async function listWorkflowRuns(id: string): Promise<WorkflowRunSummary[]> {
+  const res = await fetch(`/api/workflows/${id}/runs`)
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  return res.json()
+}
+
+export async function getWorkflowRun(id: string, runId: string): Promise<WorkflowRun> {
+  const res = await fetch(`/api/workflows/${id}/runs/${runId}`)
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  return res.json()
+}
+
+export async function runWorkflow(id: string, input: string): Promise<WorkflowRun> {
+  const res = await fetch(`/api/workflows/${id}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input }),
+  })
+  if (!res.ok) {
+    await throwApiError(res)
+  }
+  return res.json()
 }

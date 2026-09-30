@@ -4,9 +4,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -27,6 +29,8 @@ public class FeishuBotService {
 	private final AgentRepository agents;
 	private final SecretCipher cipher;
 	private final FeishuClient client;
+	private final FeishuLinkStatus links;
+	private final ApplicationEventPublisher events;
 	private final TransactionTemplate transactions;
 
 	public FeishuBotService(
@@ -36,6 +40,8 @@ public class FeishuBotService {
 			AgentRepository agents,
 			SecretCipher cipher,
 			FeishuClient client,
+			FeishuLinkStatus links,
+			ApplicationEventPublisher events,
 			PlatformTransactionManager transactionManager) {
 		this.bots = bots;
 		this.threads = threads;
@@ -43,6 +49,8 @@ public class FeishuBotService {
 		this.agents = agents;
 		this.cipher = cipher;
 		this.client = client;
+		this.links = links;
+		this.events = events;
 		this.transactions = new TransactionTemplate(transactionManager);
 	}
 
@@ -59,14 +67,18 @@ public class FeishuBotService {
 		FeishuBotEntity entity = new FeishuBotEntity();
 		entity.setId(UUID.randomUUID().toString());
 		apply(entity, request, true);
-		return toView(bots.save(entity));
+		FeishuDtos.View view = toView(bots.save(entity));
+		events.publishEvent(new FeishuBotChanged(entity.getId()));
+		return view;
 	}
 
 	@Transactional
 	public FeishuDtos.View update(String id, FeishuDtos.UpsertRequest request) {
 		FeishuBotEntity entity = require(id);
 		apply(entity, request, false);
-		return toView(bots.save(entity));
+		FeishuDtos.View view = toView(bots.save(entity));
+		events.publishEvent(new FeishuBotChanged(entity.getId()));
+		return view;
 	}
 
 	@Transactional
@@ -77,6 +89,8 @@ public class FeishuBotService {
 		threads.deleteByBotId(id);
 		seen.deleteByBotId(id);
 		bots.deleteById(id);
+		links.clear(id);
+		events.publishEvent(new FeishuBotChanged(id));
 	}
 
 	@Transactional(readOnly = true)
@@ -86,9 +100,49 @@ public class FeishuBotService {
 	}
 
 	@Transactional(readOnly = true)
+	public String lookupName(FeishuDtos.LookupRequest request) {
+		String appId = required(request.appId(), "App ID");
+		String secret = request.appSecret();
+		if (secret == null || secret.isBlank()) {
+			if (request.id() == null || request.id().isBlank()) {
+				throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请填写 App Secret");
+			}
+			secret = secrets(request.id()).appSecret();
+		}
+		else {
+			secret = secret.trim();
+		}
+		return limitName(client.botName(appId, secret));
+	}
+
+	@Transactional
+	public void refreshName(String id) {
+		FeishuBotEntity entity = bots.findById(id).orElse(null);
+		if (entity == null) {
+			return;
+		}
+		String name = limitName(client.botName(entity.getAppId(), cipher.decrypt(entity.getAppSecretCipher())));
+		if (name.equals(entity.getName())) {
+			return;
+		}
+		entity.setName(name);
+		bots.save(entity);
+	}
+
+	@Transactional(readOnly = true)
 	public FeishuBotEntity require(String id) {
 		return bots.findById(id)
 				.orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "飞书机器人不存在"));
+	}
+
+	@Transactional(readOnly = true)
+	public List<String> botIds() {
+		return bots.findAll().stream().map(FeishuBotEntity::getId).toList();
+	}
+
+	@Transactional(readOnly = true)
+	public Optional<Secrets> findSecrets(String id) {
+		return bots.findById(id).map(this::toSecrets);
 	}
 
 	@Transactional(readOnly = true)
@@ -153,32 +207,7 @@ public class FeishuBotService {
 		bots.save(entity);
 	}
 
-	static String normalizePublicBase(String value) {
-		if (value == null || value.isBlank()) {
-			return null;
-		}
-		String trimmed = value.trim();
-		int api = trimmed.indexOf("/api/feishu/events");
-		if (api >= 0) {
-			trimmed = trimmed.substring(0, api);
-		}
-		while (trimmed.endsWith("/")) {
-			trimmed = trimmed.substring(0, trimmed.length() - 1);
-		}
-		if (!trimmed.startsWith("https://")) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "公网地址需要以 https:// 开头");
-		}
-		if (trimmed.length() > 300) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "公网地址过长");
-		}
-		return trimmed;
-	}
-
 	private void apply(FeishuBotEntity entity, FeishuDtos.UpsertRequest request, boolean creating) {
-		String name = required(request.name(), "名称");
-		if (name.length() > 80) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "名称最多 80 个字");
-		}
 		String appId = required(request.appId(), "App ID");
 		if (appId.length() > 64) {
 			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "App ID 过长");
@@ -188,14 +217,11 @@ public class FeishuBotService {
 		if (!agents.existsById(agentId)) {
 			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择一个智能体");
 		}
-		entity.setName(name);
 		entity.setAppId(appId);
 		entity.setAgentId(agentId);
 		entity.setEnabled(request.enabled());
-		entity.setPublicBaseUrl(normalizePublicBase(request.publicBaseUrl()));
 		applySecret(entity, request.appSecret(), creating);
-		applyToken(entity, request.verificationToken(), creating);
-		applyEncrypt(entity, request.encryptEnabled(), request.encryptKey(), creating);
+		entity.setName(limitName(client.botName(appId, cipher.decrypt(entity.getAppSecretCipher()))));
 	}
 
 	private void applySecret(FeishuBotEntity entity, String appSecret, boolean creating) {
@@ -210,32 +236,6 @@ public class FeishuBotService {
 		}
 	}
 
-	private void applyToken(FeishuBotEntity entity, String verificationToken, boolean creating) {
-		if (verificationToken != null && !verificationToken.isBlank()) {
-			String value = verificationToken.trim();
-			entity.setVerificationTokenCipher(cipher.encrypt(value));
-			entity.setTokenLast4(last4(value));
-			return;
-		}
-		if (creating || entity.getVerificationTokenCipher() == null || entity.getVerificationTokenCipher().isBlank()) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请填写 Verification Token");
-		}
-	}
-
-	private void applyEncrypt(FeishuBotEntity entity, boolean enabled, String encryptKey, boolean creating) {
-		if (!enabled) {
-			entity.setEncryptKeyCipher(null);
-			return;
-		}
-		if (encryptKey != null && !encryptKey.isBlank()) {
-			entity.setEncryptKeyCipher(cipher.encrypt(encryptKey.trim()));
-			return;
-		}
-		if (creating || entity.getEncryptKeyCipher() == null || entity.getEncryptKeyCipher().isBlank()) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请填写 Encrypt Key，或关闭事件加密");
-		}
-	}
-
 	private void ensureAppIdUnique(String appId, String selfId) {
 		bots.findByAppId(appId).ifPresent((existing) -> {
 			if (selfId == null || !existing.getId().equals(selfId)) {
@@ -245,38 +245,47 @@ public class FeishuBotService {
 	}
 
 	private Secrets toSecrets(FeishuBotEntity entity) {
-		String encrypt = entity.getEncryptKeyCipher() == null || entity.getEncryptKeyCipher().isBlank()
-				? ""
-				: cipher.decrypt(entity.getEncryptKeyCipher());
 		return new Secrets(
+				entity.getId(),
 				entity.getAppId(),
 				cipher.decrypt(entity.getAppSecretCipher()),
-				cipher.decrypt(entity.getVerificationTokenCipher()),
-				encrypt,
 				entity.getAgentId(),
 				entity.isEnabled());
 	}
 
 	private FeishuDtos.View toView(FeishuBotEntity entity) {
-		String path = "/api/feishu/events/" + entity.getId();
-		String base = entity.getPublicBaseUrl();
+		FeishuLinkStatus.Snapshot link = links.get(entity.getId());
+		String linkState = link.state();
+		String linkDetail = link.detail();
+		if (!entity.isEnabled()) {
+			linkState = FeishuLinkStatus.STOPPED;
+			linkDetail = null;
+		}
+		else if (FeishuLinkStatus.STOPPED.equals(linkState)) {
+			linkState = FeishuLinkStatus.CONNECTING;
+			linkDetail = null;
+		}
 		return new FeishuDtos.View(
 				entity.getId(),
 				entity.getName(),
 				entity.getAppId(),
 				entity.getSecretLast4() == null ? "" : entity.getSecretLast4(),
 				entity.getAppSecretCipher() != null && !entity.getAppSecretCipher().isBlank(),
-				entity.getTokenLast4() == null ? "" : entity.getTokenLast4(),
-				entity.getVerificationTokenCipher() != null && !entity.getVerificationTokenCipher().isBlank(),
-				entity.getEncryptKeyCipher() != null && !entity.getEncryptKeyCipher().isBlank(),
 				entity.getAgentId(),
 				agents.findById(entity.getAgentId()).map(agent -> agent.getName()).orElse(""),
 				entity.isEnabled(),
-				base == null ? "" : base,
-				path,
-				base == null ? null : base + path,
+				linkState,
+				linkDetail,
 				entity.getLastError(),
 				entity.getLastEventAt());
+	}
+
+	private static String limitName(String name) {
+		String trimmed = name == null ? "" : name.trim();
+		if (trimmed.isEmpty()) {
+			throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "飞书没有返回机器人名称");
+		}
+		return trimmed.length() <= 80 ? trimmed : trimmed.substring(0, 80);
 	}
 
 	private static String required(String value, String label) {
@@ -299,10 +308,9 @@ public class FeishuBotService {
 	}
 
 	public record Secrets(
+			String botId,
 			String appId,
 			String appSecret,
-			String verificationToken,
-			String encryptKey,
 			String agentId,
 			boolean enabled) {
 	}
